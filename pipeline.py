@@ -606,6 +606,16 @@ class Step4Discoverer:
         field_hits = sum(1 for k in ["due", "deadline", "posted", "status", "number", "solicitation", "rfp", "rfq"] if k in text)
         strict_records = f.records_count >= 5
         strict_structure = (f.table_rows >= 5) or (f.repeated_blocks >= 5 and f.titled_link_blocks >= 5) or (f.date_count >= 3 and f.records_count >= 5)
+        path = urlparse(f.final_url).path.lower()
+
+        # 对典型采购机会路径做受控豁免：某些高校站点列表页没有分页/表头控制，但确实是多条机会列表。
+        if (
+            any(k in path for k in ["bidding-opportunities", "archived-bidding-opportunities", "bid-opportunities"]) and
+            f.records_count >= 4 and
+            (f.repeated_blocks >= 4 or f.table_rows >= 4) and
+            field_hits >= 1
+        ):
+            return True, 78
 
         if featured_like and not has_controls:
             return False, 20

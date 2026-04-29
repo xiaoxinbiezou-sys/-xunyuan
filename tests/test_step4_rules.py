@@ -49,3 +49,26 @@ def test_allow_external_public_bid_site_link():
     ]
     out = d.select_candidate_links("https://procurement.ucop.edu/suppliers", links)
     assert any("smart.gep.com" in x for x in out)
+
+
+def test_bidding_opportunities_path_controlled_list_exemption():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://suppliers.usc.edu/for-suppliers/bidding-opportunities",
+        title="Bidding Opportunities",
+        text="Bidding opportunities posted date due date",
+        links=[],
+        table_rows=0,
+        table_has_header=False,
+        repeated_blocks=5,
+        titled_link_blocks=5,
+        date_count=2,
+        keyword_signal_count=2,
+        has_pagination=False,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=5,
+    )
+    is_list, conf = d.is_list_page(f)
+    assert is_list is True
+    assert conf >= 70
