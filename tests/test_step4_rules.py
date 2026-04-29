@@ -37,7 +37,7 @@ def test_login_like_page_not_list():
         mostly_long_text=False,
         records_count=6,
     )
-    is_list, _ = d.is_list_page(f)
+    is_list, _, _, _, _ = d.is_list_page(f)
     assert is_list is False
 
 
@@ -69,6 +69,6 @@ def test_bidding_opportunities_path_controlled_list_exemption():
         mostly_long_text=False,
         records_count=5,
     )
-    is_list, conf = d.is_list_page(f)
+    is_list, conf, _, _, _ = d.is_list_page(f)
     assert is_list is True
     assert conf >= 70

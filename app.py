@@ -232,7 +232,7 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
         to_download_buttons(step3_df, "step3_decisions")
         st.code(step3_df.to_json(orient="records", indent=2, force_ascii=False), language="json")
 
-        st.subheader("Step 4 - 列表页发现（只下探1层）")
+        st.subheader("Step 4 - 列表页发现（默认下探1层，条件命中可到2层）")
         result_set = {"pass"} if step4_source == "pass" else ({"review"} if step4_source == "review" else {"pass", "review"})
 
         decision_by_id = {int(x["id"]): x for x in step3_df.to_dict("records")}
@@ -243,8 +243,6 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
                 continue
             if d["result"] not in result_set:
                 continue
-            if d["type"] in {"third_party_platform", "official_platform", "construction_platform"}:
-                continue  # 硬边界：Step4 不处理第三方平台
             step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
 
         discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)

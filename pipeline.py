@@ -101,6 +101,11 @@ class ListPageRecord:
     title: str
     status_code: int
     confidence: int
+    page_type: str = "list_page"
+    list_gate_results: dict[str, bool] | None = None
+    triggered_rules: list[str] | None = None
+    demotion_reason: str | None = None
+    drilldown_trace: list[str] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -112,6 +117,10 @@ class EntryPageRecord:
     title: str
     child_links_checked: int
     list_pages_found_count: int
+    page_type: str = "entry_page"
+    triggered_rules: list[str] | None = None
+    demotion_reason: str | None = None
+    drilldown_trace: list[str] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -462,7 +471,7 @@ class Step4Discoverer:
             final_url, status_code, html = fetched
             features = self.extract_features(final_url, html)
 
-            is_list, confidence = self.is_list_page(features)
+            is_list, confidence, gate_results, triggered_rules, demotion_reason = self.is_list_page(features)
             if is_list:
                 list_pages.append(
                     ListPageRecord(
@@ -473,6 +482,10 @@ class Step4Discoverer:
                         title=features.title,
                         status_code=status_code,
                         confidence=confidence,
+                        list_gate_results=gate_results,
+                        triggered_rules=triggered_rules,
+                        demotion_reason=demotion_reason,
+                        drilldown_trace=[self.normalize_url(final_url)],
                     )
                 )
                 continue
@@ -489,6 +502,7 @@ class Step4Discoverer:
                     link=link,
                     list_pages=list_pages,
                     depth=1,
+                    trace=[self.normalize_url(final_url)],
                 )
 
             entry_pages.append(
@@ -497,19 +511,21 @@ class Step4Discoverer:
                     title=features.title,
                     child_links_checked=len(candidates),
                     list_pages_found_count=found_count,
+                    triggered_rules=["ENTRY_PAGE_DISCOVERY"],
+                    drilldown_trace=[self.normalize_url(final_url)],
                 )
             )
 
         return self._dedupe_list_pages(list_pages), entry_pages
 
 
-    def _drill_for_list(self, source_url: str, parent_url: str, link: str, list_pages: list[ListPageRecord], depth: int) -> int:
+    def _drill_for_list(self, source_url: str, parent_url: str, link: str, list_pages: list[ListPageRecord], depth: int, trace: list[str]) -> int:
         fetched = self.fetch(link)
         if fetched is None:
             return 0
         final_url, status_code, html = fetched
         features = self.extract_features(final_url, html)
-        is_list, conf = self.is_list_page(features)
+        is_list, conf, gate_results, triggered_rules, demotion_reason = self.is_list_page(features)
         if is_list:
             list_pages.append(
                 ListPageRecord(
@@ -520,6 +536,10 @@ class Step4Discoverer:
                     title=features.title,
                     status_code=status_code,
                     confidence=conf,
+                    list_gate_results=gate_results,
+                    triggered_rules=triggered_rules,
+                    demotion_reason=demotion_reason,
+                    drilldown_trace=trace + [self.normalize_url(final_url)],
                 )
             )
             return 1
@@ -527,7 +547,7 @@ class Step4Discoverer:
             return 0
         found = 0
         for sub in self.select_candidate_links(final_url, features.links)[:3]:
-            found += self._drill_for_list(source_url, self.normalize_url(final_url), sub, list_pages, depth + 1)
+            found += self._drill_for_list(source_url, self.normalize_url(final_url), sub, list_pages, depth + 1, trace + [self.normalize_url(final_url)])
         return found
     def fetch(self, url: str) -> tuple[str, int, str] | None:
         try:
@@ -590,46 +610,57 @@ class Step4Discoverer:
             records_count=records_count,
         )
 
-    def is_list_page(self, f: PageFeatures) -> tuple[bool, int]:
-        if f.single_object:
-            return False, 0
+    def is_list_page(self, f: PageFeatures) -> tuple[bool, int, dict[str, bool], list[str], str | None]:
+        gates = {
+            "not_single_object": not f.single_object,
+            "record_count": f.records_count >= 5,
+            "structure": (f.table_rows >= 5) or (f.repeated_blocks >= 5 and f.titled_link_blocks >= 5) or (f.date_count >= 3 and f.records_count >= 5),
+            "controls": f.has_pagination or f.table_has_header,
+            "field_hits": False,
+        }
+        triggered: list[str] = []
+        demotion_reason: str | None = None
+
+        if not gates["not_single_object"]:
+            return False, 0, gates, ["SINGLE_OBJECT"], "SINGLE_OBJECT"
         if f.records_count < 3 and f.table_rows < 3:
-            return False, 0
+            return False, 0, gates, ["TOO_FEW_RECORDS"], "TOO_FEW_RECORDS"
         if f.mostly_long_text and f.records_count < 3:
-            return False, 0
+            return False, 0, gates, ["LONG_TEXT_INTRO"], "LONG_TEXT_INTRO"
 
         text = f"{f.title} {f.text}".lower()
-        if ("account login" in text or "password" in text or "userid" in text) and not f.has_pagination:
-            return False, 0
-        featured_like = any(k in text for k in ["featured", "highlights", "latest", "news", "resources"])
-        has_controls = f.has_pagination or f.table_has_header
         field_hits = sum(1 for k in ["due", "deadline", "posted", "status", "number", "solicitation", "rfp", "rfq"] if k in text)
-        strict_records = f.records_count >= 5
-        strict_structure = (f.table_rows >= 5) or (f.repeated_blocks >= 5 and f.titled_link_blocks >= 5) or (f.date_count >= 3 and f.records_count >= 5)
-        path = urlparse(f.final_url).path.lower()
+        gates["field_hits"] = field_hits >= 2
+        if ("account login" in text or "password" in text or "userid" in text) and not f.has_pagination:
+            return False, 0, gates, ["LOGIN_PORTAL"], "LOGIN_PORTAL"
 
-        # 对典型采购机会路径做受控豁免：某些高校站点列表页没有分页/表头控制，但确实是多条机会列表。
+        featured_like = any(k in text for k in ["featured", "highlights", "latest", "news", "resources"])
+        path = urlparse(f.final_url).path.lower()
         if (
             any(k in path for k in ["bidding-opportunities", "archived-bidding-opportunities", "bid-opportunities"]) and
             f.records_count >= 4 and
             (f.repeated_blocks >= 4 or f.table_rows >= 4) and
             field_hits >= 1
         ):
-            return True, 78
+            triggered.append("CONTROLLED_PATH_EXEMPTION")
+            return True, 78, gates, triggered, None
 
-        if featured_like and not has_controls:
-            return False, 20
-        if not (strict_records and strict_structure and has_controls and field_hits >= 2):
-            return False, 40
+        if featured_like and not gates["controls"]:
+            return False, 20, gates, ["FEATURED_NO_CONTROLS"], "FEATURED_NO_CONTROLS"
+        if not all(gates.values()):
+            return False, 40, gates, ["LIST_HARD_GATES_FAILED"], "LIST_HARD_GATES_FAILED"
 
         score = 70
         if f.table_rows >= 8:
             score += 10
+            triggered.append("TABLE_DENSE")
         if f.has_pagination:
             score += 10
+            triggered.append("PAGINATION")
         if f.date_count >= 5:
             score += 5
-        return True, max(0, min(100, score))
+            triggered.append("DATE_DENSE")
+        return True, max(0, min(100, score)), gates, triggered, None
 
     def is_entry_page(self, f: PageFeatures) -> bool:
         text = f"{f.title} {f.text}".lower()
