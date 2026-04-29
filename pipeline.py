@@ -39,7 +39,8 @@ OPEN_KEYWORDS = ["open date", "opening date", "start date"]
 
 ENTRY_POSITIVE = [
     "bids", "open bids", "current bids", "solicitations", "opportunities", "rfp", "rfq", "contracts",
-    "awards", "closed bids", "archive", "agencies", "vendors", "directory",
+    "awards", "closed bids", "archive", "agencies", "vendors", "directory", "event", "events",
+    "view all events", "public bid site", "vendor portal", "supplier portal",
 ]
 ENTRY_NEGATIVE = ["login", "register", "manual", "guide", "policy", "contact", "jobs", "news", "minutes", "agenda"]
 
@@ -598,6 +599,8 @@ class Step4Discoverer:
             return False, 0
 
         text = f"{f.title} {f.text}".lower()
+        if ("account login" in text or "password" in text or "userid" in text) and not f.has_pagination:
+            return False, 0
         featured_like = any(k in text for k in ["featured", "highlights", "latest", "news", "resources"])
         has_controls = f.has_pagination or f.table_has_header
         field_hits = sum(1 for k in ["due", "deadline", "posted", "status", "number", "solicitation", "rfp", "rfq"] if k in text)
@@ -637,15 +640,17 @@ class Step4Discoverer:
 
     def select_candidate_links(self, page_url: str, links: list[tuple[str, str]]) -> list[str]:
         base_host = urlparse(page_url).netloc.lower()
+        allowed_external_hosts = {"smart.gep.com", "vendors.planetbids.com", "planetbids.com"}
         selected: list[str] = []
         seen: set[str] = set()
 
         for text, href in links:
             u = self.normalize_url(href)
             host = urlparse(u).netloc.lower()
-            if host != base_host:
-                continue
             combo = f"{text} {u}".lower()
+            strong_portal_link = any(k in combo for k in ["public bid site", "view all events", "bid opportunities", "open bids", "vendor portal", "supplier portal"])
+            if host != base_host and not (host in allowed_external_hosts and strong_portal_link):
+                continue
             if any(n in combo for n in ENTRY_NEGATIVE):
                 continue
             if not any(p in combo for p in ENTRY_POSITIVE):
