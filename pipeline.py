@@ -511,6 +511,7 @@ class Step4Discoverer:
                     title=features.title,
                     child_links_checked=len(candidates),
                     list_pages_found_count=found_count,
+                    page_type=self.classify_non_list_page_type(features),
                     triggered_rules=["ENTRY_PAGE_DISCOVERY"],
                     drilldown_trace=[self.normalize_url(final_url)],
                 )
@@ -629,6 +630,11 @@ class Step4Discoverer:
             return False, 0, gates, ["LONG_TEXT_INTRO"], "LONG_TEXT_INTRO"
 
         text = f"{f.title} {f.text}".lower()
+        non_list_terms = ["about us", "how to", "resource", "overview", "schedule", "calendar", "article", "blog", "guide"]
+        if any(t in text for t in non_list_terms) and f.records_count < 8:
+            return False, 0, gates, ["NON_LIST_TERM_HIT"], "NON_LIST_TERM_HIT"
+        if ("search" in text and ("open solicitations" in text or "awarded solicitations" in text)) and f.records_count < 3:
+            return False, 0, gates, ["SEARCH_SHELL_PAGE"], "SEARCH_SHELL_PAGE"
         field_hits = sum(1 for k in ["due", "deadline", "posted", "status", "number", "solicitation", "rfp", "rfq"] if k in text)
         gates["field_hits"] = field_hits >= 2
         if ("account login" in text or "password" in text or "userid" in text) and not f.has_pagination:
@@ -674,6 +680,15 @@ class Step4Discoverer:
             if positive >= 2:
                 return True
         return any(p in text for p in ENTRY_POSITIVE)
+
+    def classify_non_list_page_type(self, f: PageFeatures) -> str:
+        text = f"{f.title} {f.text}".lower()
+        has_controls = f.has_pagination or f.table_has_header
+        if f.records_count >= 4 and (f.repeated_blocks >= 4 or f.titled_link_blocks >= 4) and not has_controls:
+            return "multi_detail_hub"
+        if "search" in text and ("open solicitations" in text or "awarded solicitations" in text):
+            return "search_shell"
+        return "entry_page"
 
     def _has_strong_entry_signal(self, f: PageFeatures) -> bool:
         text = f"{f.title} {f.text}".lower()

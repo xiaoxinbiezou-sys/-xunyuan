@@ -72,3 +72,46 @@ def test_bidding_opportunities_path_controlled_list_exemption():
     is_list, conf, _, _, _ = d.is_list_page(f)
     assert is_list is True
     assert conf >= 70
+
+
+def test_schedule_page_not_list():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://dot.ca.gov/programs/procurement-and-contracts/bid-opening-schedule",
+        title="Bid Opening Schedule",
+        text="Bid opening schedule calendar dates",
+        links=[],
+        table_rows=4,
+        table_has_header=True,
+        repeated_blocks=2,
+        titled_link_blocks=2,
+        date_count=6,
+        keyword_signal_count=1,
+        has_pagination=False,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=4,
+    )
+    is_list, *_ = d.is_list_page(f)
+    assert is_list is False
+
+
+def test_search_shell_page_type():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://doingbusiness.lacounty.gov/open-solicitations",
+        title="Open Solicitations",
+        text="Open Solicitations Search",
+        links=[],
+        table_rows=0,
+        table_has_header=False,
+        repeated_blocks=0,
+        titled_link_blocks=0,
+        date_count=0,
+        keyword_signal_count=0,
+        has_pagination=False,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=0,
+    )
+    assert d.classify_non_list_page_type(f) == "search_shell"
