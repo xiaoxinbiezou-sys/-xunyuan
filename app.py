@@ -13,6 +13,7 @@ from pipeline import (
     Step3Classifier,
     Step4Discoverer,
     Step4Input,
+    Step5LLMJudge,
 )
 from step3_rules import (
     COMPETITOR_PATTERNS,
@@ -178,16 +179,26 @@ with st.sidebar:
 
     st.divider()
     st.header("运行模式")
-    run_mode = st.radio("选择流程", options=["full_pipeline", "step4_only"], index=0)
+    run_mode = st.radio("选择流程", options=["full_pipeline", "step4_only", "step5_only"], index=0)
+
+    st.divider()
+    st.header("Step5 模型配置")
+    step5_provider = st.selectbox("Provider", ["deepseek", "qwen", "doubao", "openai_compatible"], index=0)
+    step5_model = st.text_input("Model", value="deepseek-chat")
+    step5_api_key = st.text_input("Step5 API Key", type="password")
+    step5_base_url = st.text_input("Step5 Base URL", value="")
 
 if run_mode == "full_pipeline":
     uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
     text_input = st.text_area("或粘贴实体（每行一个）", placeholder="City of Austin\nTravis County")
-else:
+elif run_mode == "step4_only":
     uploaded_file = st.file_uploader("上传 Step4 输入文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
     text_input = ""
+else:
+    uploaded_file = st.file_uploader("上传 Step5 输入文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
+    text_input = ""
 
-if st.button("运行" if run_mode == "step4_only" else "运行 Step1 + Step2 + Step3 + Step4", type="primary"):
+if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 Step1 + Step2 + Step3 + Step4", type="primary"):
     raw_data: list[dict] = []
     try:
         if uploaded_file:
@@ -197,6 +208,23 @@ if st.button("运行" if run_mode == "step4_only" else "运行 Step1 + Step2 + S
 
         if not raw_data:
             st.warning("请输入实体数据")
+            st.stop()
+
+        if run_mode == "step5_only":
+            if not uploaded_file:
+                st.warning("请上传 Step5 输入文件")
+                st.stop()
+            df = pd.read_csv(uploaded_file) if uploaded_file.name.lower().endswith(".csv") else (pd.read_excel(uploaded_file) if uploaded_file.name.lower().endswith(".xlsx") else pd.DataFrame(json.load(uploaded_file)))
+            rows = df.to_dict("records")
+            if not step5_api_key.strip():
+                st.error("请填写 Step5 API Key")
+                st.stop()
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            decisions = judge.judge_rows(rows)
+            out_df = pd.DataFrame([x.to_dict() for x in decisions])
+            st.success(f"Step5 完成：{len(out_df)} 条最终判定")
+            st.dataframe(out_df, use_container_width=True, height=240)
+            to_download_buttons(out_df, "step5_decisions")
             st.stop()
 
         if run_mode == "step4_only":

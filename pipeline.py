@@ -808,3 +808,87 @@ def _get_by_dot_path(data: Any, path: str) -> Any:
             continue
         raise ValueError(f"Path not found: {path}")
     return node
+
+
+@dataclass(slots=True)
+class Step5Decision:
+    url: str
+    final_type: str
+    confidence: float
+    reason: str
+    provider: str
+    model: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class Step5LLMJudge:
+    """利用大模型对候选页面做最终类型判定。"""
+
+    def __init__(self, provider: str, model: str, api_key: str, base_url: str = "", timeout: float = 30.0) -> None:
+        self.provider = provider.strip().lower()
+        self.model = model.strip()
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip()
+        self.timeout = timeout
+
+    def judge_rows(self, rows: list[dict[str, Any]]) -> list[Step5Decision]:
+        out: list[Step5Decision] = []
+        for row in rows:
+            out.append(self.judge_one(row))
+        return out
+
+    def judge_one(self, row: dict[str, Any]) -> Step5Decision:
+        url = str(row.get("url") or row.get("final_url") or "")
+        title = str(row.get("title") or "")
+        text = str(row.get("text") or "")[:4000]
+        page_type_hint = str(row.get("page_type") or "")
+
+        prompt = (
+            "你是招投标页面分类器。只输出JSON，字段: final_type, confidence, reason。"
+            "final_type只能是list_page/entry_page/multi_detail_hub/search_shell/general_info。"
+            "URL: " + url + "\nTITLE: " + title + "\nPAGE_TYPE_HINT: " + page_type_hint + "\nTEXT: " + text
+        )
+
+        result = self._call_model(prompt)
+        final_type = str(result.get("final_type") or "general_info")
+        confidence = float(result.get("confidence") or 0.5)
+        reason = str(result.get("reason") or "")
+        return Step5Decision(url=url, final_type=final_type, confidence=confidence, reason=reason, provider=self.provider, model=self.model)
+
+    def _call_model(self, prompt: str) -> dict[str, Any]:
+        endpoint, headers, payload = self._build_request(prompt)
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+
+        content = self._extract_content(data)
+        try:
+            return json.loads(content)
+        except Exception:
+            return {"final_type": "general_info", "confidence": 0.4, "reason": content[:300]}
+
+    def _build_request(self, prompt: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+        if self.provider in {"deepseek", "qwen", "doubao", "openai_compatible"}:
+            base = self.base_url or "https://api.deepseek.com/v1"
+            endpoint = f"{base.rstrip('/')}/chat/completions"
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "你是一个严谨的网页分类器。"},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+            }
+            return endpoint, headers, payload
+        raise ValueError("Unsupported Step5 provider")
+
+    @staticmethod
+    def _extract_content(data: dict[str, Any]) -> str:
+        choices = data.get("choices") or []
+        if choices and isinstance(choices, list):
+            msg = choices[0].get("message") or {}
+            return str(msg.get("content") or "")
+        return "{}"
