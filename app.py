@@ -145,19 +145,19 @@ def parse_multiline_patterns(text: str) -> list[str]:
 def read_tabular_file(uploaded_file) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     if name.endswith(".xlsx"):
-        return pd.read_excel(uploaded_file)
+        return sanitize_for_excel(pd.read_excel(uploaded_file))
     if name.endswith(".json"):
-        return pd.DataFrame(json.load(uploaded_file))
+        return sanitize_for_excel(pd.DataFrame(json.load(uploaded_file)))
     # csv fallback encodings for production robustness
     raw = uploaded_file.getvalue()
     for enc in ["utf-8", "utf-8-sig", "gb18030", "big5", "latin1"]:
         try:
-            return pd.read_csv(io.BytesIO(raw), encoding=enc)
+            return sanitize_for_excel(pd.read_csv(io.BytesIO(raw), encoding=enc))
         except Exception:
             continue
     # last resort with replacement to avoid pipeline break
     text = raw.decode("utf-8", errors="replace")
-    return pd.read_csv(io.StringIO(text))
+    return sanitize_for_excel(pd.read_csv(io.StringIO(text)))
 
 
 def run_ai_entry_drilldown(candidates_df: pd.DataFrame, judge: Step5LLMJudge) -> list[str]:
@@ -273,7 +273,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                 st.stop()
             judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
             decisions = judge.judge_rows(rows)
-            out_df = pd.DataFrame([x.to_dict() for x in decisions])
+            out_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
             st.success(f"Step5 完成：{len(out_df)} 条最终判定")
             st.dataframe(out_df, use_container_width=True, height=240)
             to_download_buttons(out_df, "step5_decisions")
@@ -337,9 +337,9 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
             candidates = discoverer.discover_candidates(step4_inputs)
             list_pages, entry_pages = discoverer.discover(step4_inputs)
-            candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
-            list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
-            entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+            candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
+            list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+            entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
             st.markdown("**step4_candidates.csv**")
             st.dataframe(candidates_df, use_container_width=True, height=220)
             to_download_buttons(candidates_df, "step4_candidates")
@@ -353,7 +353,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             if step5_api_key.strip() and auto_run_step5:
                 judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
                 decisions5 = judge.judge_rows(candidates_df.to_dict("records"))
-                step5_df = pd.DataFrame([x.to_dict() for x in decisions5])
+                step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions5]))
                 st.markdown("**step5_decisions.csv**")
                 st.dataframe(step5_df, use_container_width=True, height=220)
                 to_download_buttons(step5_df, "step5_decisions")
@@ -386,9 +386,9 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             candidates = discoverer.discover_candidates(step4_inputs)
             list_pages, entry_pages = discoverer.discover(step4_inputs)
 
-            candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
-            list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
-            entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+            candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
+            list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+            entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
             if step5_api_key.strip() and not candidates_df.empty:
                 judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
@@ -477,9 +477,9 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
         candidates = discoverer.discover_candidates(step4_inputs)
         list_pages, entry_pages = discoverer.discover(step4_inputs)
 
-        candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
-        list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
-        entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+        candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
+        list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+        entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
         if step5_api_key.strip() and not candidates_df.empty:
             judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
@@ -515,7 +515,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                 judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
                 step5_rows = candidates_df.to_dict("records") if not candidates_df.empty else list_pages_df.to_dict("records")
                 decisions = judge.judge_rows(step5_rows)
-                step5_df = pd.DataFrame([x.to_dict() for x in decisions])
+                step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
                 st.subheader("Step 5 - 最终语义判定")
                 st.success(f"Step 5 完成：{len(step5_df)} 条")
                 st.dataframe(step5_df, use_container_width=True, height=220)
