@@ -176,10 +176,18 @@ with st.sidebar:
     st.header("Step4 输入设置")
     step4_source = st.radio("Step4 输入来源", options=["pass", "review", "pass+review"], index=2)
 
-uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
-text_input = st.text_area("或粘贴实体（每行一个）", placeholder="City of Austin\nTravis County")
+    st.divider()
+    st.header("运行模式")
+    run_mode = st.radio("选择流程", options=["full_pipeline", "step4_only"], index=0)
 
-if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
+if run_mode == "full_pipeline":
+    uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
+    text_input = st.text_area("或粘贴实体（每行一个）", placeholder="City of Austin\nTravis County")
+else:
+    uploaded_file = st.file_uploader("上传 Step4 输入文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
+    text_input = ""
+
+if st.button("运行" if run_mode == "step4_only" else "运行 Step1 + Step2 + Step3 + Step4", type="primary"):
     raw_data: list[dict] = []
     try:
         if uploaded_file:
@@ -189,6 +197,35 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
 
         if not raw_data:
             st.warning("请输入实体数据")
+            st.stop()
+
+        if run_mode == "step4_only":
+            if not uploaded_file:
+                st.warning("请上传 Step4 输入文件")
+                st.stop()
+            df = pd.read_csv(uploaded_file) if uploaded_file.name.lower().endswith(".csv") else (pd.read_excel(uploaded_file) if uploaded_file.name.lower().endswith(".xlsx") else pd.DataFrame(json.load(uploaded_file)))
+            if "url" not in [c.lower() for c in df.columns]:
+                st.error("Step4 输入必须包含 url 列")
+                st.stop()
+            col_map = {c.lower(): c for c in df.columns}
+            urls = df[col_map["url"]].astype(str).tolist()
+            step3_results = df[col_map["step3_result"]].astype(str).tolist() if "step3_result" in col_map else ["pass"] * len(urls)
+            step3_types = df[col_map["step3_type"]].astype(str).tolist() if "step3_type" in col_map else ["other"] * len(urls)
+
+            step4_inputs = [Step4Input(id=i + 1, url=u, step3_result=step3_results[i], step3_type=step3_types[i]) for i, u in enumerate(urls) if str(u).strip()]
+            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            list_pages, entry_pages = discoverer.discover(step4_inputs)
+
+            list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
+            entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+
+            st.success(f"Step4 完成：列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+            st.markdown("**list_pages.csv**")
+            st.dataframe(list_pages_df, use_container_width=True, height=220)
+            to_download_buttons(list_pages_df, "list_pages")
+            st.markdown("**entry_pages.csv**")
+            st.dataframe(entry_pages_df, use_container_width=True, height=220)
+            to_download_buttons(entry_pages_df, "entry_pages")
             st.stop()
 
         entities = build_entities(raw_data)
