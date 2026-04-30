@@ -150,6 +150,7 @@ def read_tabular_file(uploaded_file) -> pd.DataFrame:
 
 def run_ai_entry_drilldown(candidates_df: pd.DataFrame, judge: Step5LLMJudge) -> list[str]:
     next_urls: list[str] = []
+    blocked_terms = ["policy", "manual", "contact", "about", "faq", "news", "login"]
     for row in candidates_df.to_dict("records"):
         if str(row.get("candidate_type") or "") == "list_like":
             continue
@@ -161,6 +162,11 @@ def run_ai_entry_drilldown(candidates_df: pd.DataFrame, judge: Step5LLMJudge) ->
             continue
         for u in decision.get("next_urls") or []:
             us = str(u).strip()
+            lus = us.lower()
+            if not (lus.startswith("http://") or lus.startswith("https://")):
+                continue
+            if any(t in lus for t in blocked_terms):
+                continue
             if us and us not in next_urls:
                 next_urls.append(us)
             if len(next_urls) >= 5:
@@ -379,6 +385,20 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
         candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
         list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
         entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+
+        if step5_api_key.strip() and not candidates_df.empty:
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            next_urls = run_ai_entry_drilldown(candidates_df, judge)
+            if next_urls:
+                drill_inputs = [Step4Input(id=200000 + i, url=u, step3_result="review", step3_type="other") for i, u in enumerate(next_urls)]
+                child_candidates = discoverer.discover_candidates(drill_inputs)
+                child_list, child_entry = discoverer.discover(drill_inputs)
+                if child_candidates:
+                    candidates_df = pd.concat([candidates_df, pd.DataFrame([x.to_dict() for x in child_candidates])], ignore_index=True)
+                if child_list:
+                    list_pages_df = pd.concat([list_pages_df, pd.DataFrame([x.to_dict() for x in child_list])], ignore_index=True)
+                if child_entry:
+                    entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
 
         st.success(f"Step 4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
         st.markdown("**step4_candidates.csv**")

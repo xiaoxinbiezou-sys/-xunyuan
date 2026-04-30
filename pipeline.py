@@ -864,6 +864,7 @@ class Step5Decision:
     reason: str
     provider: str
     model: str
+    input_quality: str = "unknown"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -894,6 +895,7 @@ class Step5LLMJudge:
                         reason=f"step5_row_error:{exc}",
                         provider=self.provider,
                         model=self.model,
+                        input_quality="error",
                     )
                 )
         return out
@@ -903,6 +905,11 @@ class Step5LLMJudge:
         title = str(row.get("title") or "")
         text = str(row.get("text") or "")[:4000]
         page_type_hint = str(row.get("page_type") or "")
+        input_quality = "good"
+        if len(text.strip()) < 120:
+            input_quality = "low_text"
+        if text.count("?") > max(20, len(text) * 0.1):
+            input_quality = "garbled"
 
         prompt = (
             "你是招投标页面分类器。只输出JSON，字段: final_type, confidence, reason。"
@@ -914,7 +921,7 @@ class Step5LLMJudge:
         final_type = str(result.get("final_type") or "general_info")
         confidence = float(result.get("confidence") or 0.5)
         reason = str(result.get("reason") or "")
-        return Step5Decision(url=url, final_type=final_type, confidence=confidence, reason=reason, provider=self.provider, model=self.model)
+        return Step5Decision(url=url, final_type=final_type, confidence=confidence, reason=reason, provider=self.provider, model=self.model, input_quality=input_quality)
 
 
     def judge_entry_candidate(self, row: dict[str, Any]) -> dict[str, Any]:
