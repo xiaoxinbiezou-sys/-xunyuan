@@ -110,12 +110,23 @@ def build_entities(raw_items: list[dict]) -> list[Entity]:
     return entities
 
 
+
+
+def sanitize_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    # remove illegal control chars for openpyxl worksheet cells
+    def _clean(v):
+        if not isinstance(v, str):
+            return v
+        return "".join(ch for ch in v if (ch in {"\t", "\n", "\r"} or ord(ch) >= 32))
+
+    return df.applymap(_clean)
 def to_download_buttons(df: pd.DataFrame, key_prefix: str) -> None:
-    json_data = df.to_json(orient="records", indent=2, force_ascii=False)
-    csv_data = df.to_csv(index=False)
+    safe_df = sanitize_for_excel(df)
+    json_data = safe_df.to_json(orient="records", indent=2, force_ascii=False)
+    csv_data = safe_df.to_csv(index=False)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="data")
+        safe_df.to_excel(writer, index=False, sheet_name="data")
     col1, col2, col3 = st.columns(3)
     col1.download_button("下载 JSON", json_data, f"{key_prefix}.json", mime="application/json")
     col2.download_button("下载 CSV", csv_data, f"{key_prefix}.csv", mime="text/csv")
