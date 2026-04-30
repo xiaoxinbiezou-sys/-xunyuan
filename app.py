@@ -9,10 +9,12 @@ from keyword_generator import Entity, KeywordGenerator
 from pipeline import (
     CustomJsonSearchProvider,
     SearchRunner,
+    SearchResult,
     SerperProvider,
     Step3Classifier,
     Step4Discoverer,
     Step4Input,
+    Step5LLMJudge,
 )
 from step3_rules import (
     COMPETITOR_PATTERNS,
@@ -108,12 +110,23 @@ def build_entities(raw_items: list[dict]) -> list[Entity]:
     return entities
 
 
+
+
+def sanitize_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    # remove illegal control chars for openpyxl worksheet cells
+    def _clean(v):
+        if not isinstance(v, str):
+            return v
+        return "".join(ch for ch in v if (ch in {"\t", "\n", "\r"} or ord(ch) >= 32))
+
+    return df.applymap(_clean)
 def to_download_buttons(df: pd.DataFrame, key_prefix: str) -> None:
-    json_data = df.to_json(orient="records", indent=2, force_ascii=False)
-    csv_data = df.to_csv(index=False)
+    safe_df = sanitize_for_excel(df)
+    json_data = safe_df.to_json(orient="records", indent=2, force_ascii=False)
+    csv_data = safe_df.to_csv(index=False)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="data")
+        safe_df.to_excel(writer, index=False, sheet_name="data")
     col1, col2, col3 = st.columns(3)
     col1.download_button("下载 JSON", json_data, f"{key_prefix}.json", mime="application/json")
     col2.download_button("下载 CSV", csv_data, f"{key_prefix}.csv", mime="text/csv")
@@ -127,6 +140,50 @@ def to_download_buttons(df: pd.DataFrame, key_prefix: str) -> None:
 
 def parse_multiline_patterns(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def read_tabular_file(uploaded_file) -> pd.DataFrame:
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx"):
+        return sanitize_for_excel(pd.read_excel(uploaded_file))
+    if name.endswith(".json"):
+        return sanitize_for_excel(pd.DataFrame(json.load(uploaded_file)))
+    # csv fallback encodings for production robustness
+    raw = uploaded_file.getvalue()
+    for enc in ["utf-8", "utf-8-sig", "gb18030", "big5", "latin1"]:
+        try:
+            return sanitize_for_excel(pd.read_csv(io.BytesIO(raw), encoding=enc))
+        except Exception:
+            continue
+    # last resort with replacement to avoid pipeline break
+    text = raw.decode("utf-8", errors="replace")
+    return sanitize_for_excel(pd.read_csv(io.StringIO(text)))
+
+
+def run_ai_entry_drilldown(candidates_df: pd.DataFrame, judge: Step5LLMJudge) -> list[str]:
+    next_urls: list[str] = []
+    blocked_terms = ["policy", "manual", "contact", "about", "faq", "news", "login"]
+    for row in candidates_df.to_dict("records"):
+        if str(row.get("candidate_type") or "") == "list_like":
+            continue
+        try:
+            decision = judge.judge_entry_candidate(row)
+        except Exception:
+            continue
+        if not decision.get("is_entry_page"):
+            continue
+        for u in decision.get("next_urls") or []:
+            us = str(u).strip()
+            lus = us.lower()
+            if not (lus.startswith("http://") or lus.startswith("https://")):
+                continue
+            if any(t in lus for t in blocked_terms):
+                continue
+            if us and us not in next_urls:
+                next_urls.append(us)
+            if len(next_urls) >= 5:
+                return next_urls
+    return next_urls
 
 
 with st.sidebar:
@@ -176,12 +233,132 @@ with st.sidebar:
     st.header("Step4 输入设置")
     step4_source = st.radio("Step4 输入来源", options=["pass", "review", "pass+review"], index=2)
 
-uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
-text_input = st.text_area("或粘贴实体（每行一个）", placeholder="City of Austin\nTravis County")
+    st.divider()
+    st.header("运行模式")
+    run_mode = st.radio("选择流程", options=["full_pipeline", "step2_uploaded", "step4_only", "step5_only"], index=0)
 
-if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
+    st.divider()
+    st.header("Step5 模型配置")
+    step5_provider = st.selectbox("Provider", ["deepseek", "qwen", "doubao", "openai_compatible"], index=0)
+    step5_model = st.text_input("Model", value="deepseek-chat")
+    step5_api_key = st.text_input("Step5 API Key", type="password")
+    step5_base_url = st.text_input("Step5 Base URL", value="")
+
+auto_run_step5 = run_mode == "full_pipeline"
+
+if run_mode == "full_pipeline":
+    uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
+    text_input = st.text_area("或粘贴实体（每行一个）", placeholder="City of Austin\nTravis County")
+elif run_mode == "step2_uploaded":
+    uploaded_file = st.file_uploader("上传 Step2 搜索结果文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
+    text_input = ""
+elif run_mode == "step4_only":
+    uploaded_file = st.file_uploader("上传 Step4 输入文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
+    text_input = ""
+else:
+    uploaded_file = st.file_uploader("上传 Step5 输入文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
+    text_input = ""
+
+if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 Step1 + Step2 + Step3 + Step4", type="primary"):
     raw_data: list[dict] = []
     try:
+        if run_mode == "step5_only":
+            if not uploaded_file:
+                st.warning("请上传 Step5 输入文件")
+                st.stop()
+            df = read_tabular_file(uploaded_file)
+            rows = df.to_dict("records")
+            if not step5_api_key.strip():
+                st.error("请填写 Step5 API Key")
+                st.stop()
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            decisions = judge.judge_rows(rows)
+            out_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
+            st.success(f"Step5 完成：{len(out_df)} 条最终判定")
+            st.dataframe(out_df, use_container_width=True, height=240)
+            to_download_buttons(out_df, "step5_decisions")
+            st.stop()
+
+        if run_mode == "step2_uploaded":
+            if not uploaded_file:
+                st.warning("请上传 Step2 搜索结果文件")
+                st.stop()
+            df = read_tabular_file(uploaded_file)
+            col_map = {c.lower(): c for c in df.columns}
+            if "url" not in col_map:
+                st.error("Step2 文件必须包含 url 列")
+                st.stop()
+            step2_results: list[SearchResult] = []
+            for i, r in enumerate(df.to_dict("records"), start=1):
+                step2_results.append(
+                    SearchResult(
+                        id=int(r.get(col_map.get("id", ""), i) or i),
+                        entity_id=int(r.get(col_map.get("entity_id", ""), 1) or 1),
+                        query_text=str(r.get(col_map.get("query_text", ""), "uploaded_step2") or "uploaded_step2"),
+                        query_type=str(r.get(col_map.get("query_type", ""), "uploaded") or "uploaded"),
+                        query_priority=int(r.get(col_map.get("query_priority", ""), 1) or 1),
+                        rank=int(r.get(col_map.get("rank", ""), i) or i),
+                        title=str(r.get(col_map.get("title", ""), "") or ""),
+                        snippet=str(r.get(col_map.get("snippet", ""), "") or ""),
+                        url=str(r.get(col_map["url"], "") or ""),
+                        provider=str(r.get(col_map.get("provider", ""), "uploaded") or "uploaded"),
+                    )
+                )
+
+            st.subheader("Step 2(上传) - 搜索结果")
+            step2_df = pd.DataFrame([r.to_dict() for r in step2_results])
+            st.dataframe(step2_df, use_container_width=True, height=220)
+            to_download_buttons(step2_df, "step2_search_results_uploaded")
+
+            st.subheader("Step 3 - pass/review/reject 分类")
+            classifier = Step3Classifier(
+                competitor_patterns=parse_multiline_patterns(competitor_text),
+                irrelevant_patterns=parse_multiline_patterns(irrelevant_text),
+                third_party_patterns=parse_multiline_patterns(third_party_text),
+                official_patterns=parse_multiline_patterns(official_text),
+                construction_patterns=parse_multiline_patterns(construction_text),
+            )
+            decisions = classifier.classify(step2_results)
+            step3_df = pd.DataFrame([d.to_dict() for d in decisions])
+            st.dataframe(step3_df, use_container_width=True, height=200)
+            to_download_buttons(step3_df, "step3_decisions")
+
+            result_set = {"pass"} if step4_source == "pass" else ({"review"} if step4_source == "review" else {"pass", "review"})
+            decision_by_id = {int(x["id"]): x for x in step3_df.to_dict("records")}
+            step4_inputs: list[Step4Input] = []
+            for row in step2_results:
+                d = decision_by_id.get(row.id)
+                if not d or d["result"] not in result_set:
+                    continue
+                if d["type"] in {"third_party_platform", "official_platform", "construction_platform"}:
+                    continue
+                step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
+
+            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            candidates = discoverer.discover_candidates(step4_inputs)
+            list_pages, entry_pages = discoverer.discover(step4_inputs)
+            candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
+            list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+            entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
+            st.markdown("**step4_candidates.csv**")
+            st.dataframe(candidates_df, use_container_width=True, height=220)
+            to_download_buttons(candidates_df, "step4_candidates")
+            st.markdown("**list_pages.csv**")
+            st.dataframe(list_pages_df, use_container_width=True, height=220)
+            to_download_buttons(list_pages_df, "list_pages")
+            st.markdown("**entry_pages.csv**")
+            st.dataframe(entry_pages_df, use_container_width=True, height=220)
+            to_download_buttons(entry_pages_df, "entry_pages")
+
+            if step5_api_key.strip() and auto_run_step5:
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                decisions5 = judge.judge_rows(candidates_df.to_dict("records"))
+                step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions5]))
+                st.markdown("**step5_decisions.csv**")
+                st.dataframe(step5_df, use_container_width=True, height=220)
+                to_download_buttons(step5_df, "step5_decisions")
+            st.stop()
+
         if uploaded_file:
             raw_data.extend(parse_file(uploaded_file))
         if text_input.strip():
@@ -189,6 +366,55 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
 
         if not raw_data:
             st.warning("请输入实体数据")
+            st.stop()
+
+        if run_mode == "step4_only":
+            if not uploaded_file:
+                st.warning("请上传 Step4 输入文件")
+                st.stop()
+            df = read_tabular_file(uploaded_file)
+            if "url" not in [c.lower() for c in df.columns]:
+                st.error("Step4 输入必须包含 url 列")
+                st.stop()
+            col_map = {c.lower(): c for c in df.columns}
+            urls = df[col_map["url"]].astype(str).tolist()
+            step3_results = df[col_map["step3_result"]].astype(str).tolist() if "step3_result" in col_map else ["pass"] * len(urls)
+            step3_types = df[col_map["step3_type"]].astype(str).tolist() if "step3_type" in col_map else ["other"] * len(urls)
+
+            step4_inputs = [Step4Input(id=i + 1, url=u, step3_result=step3_results[i], step3_type=step3_types[i]) for i, u in enumerate(urls) if str(u).strip()]
+            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            candidates = discoverer.discover_candidates(step4_inputs)
+            list_pages, entry_pages = discoverer.discover(step4_inputs)
+
+            candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
+            list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+            entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
+
+            if step5_api_key.strip() and not candidates_df.empty:
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                next_urls = run_ai_entry_drilldown(candidates_df, judge)
+                if next_urls:
+                    drill_inputs = [Step4Input(id=100000 + i, url=u, step3_result="review", step3_type="other") for i, u in enumerate(next_urls)]
+                    child_candidates = discoverer.discover_candidates(drill_inputs)
+                    child_list, child_entry = discoverer.discover(drill_inputs)
+                    if child_candidates:
+                        candidates_df = pd.concat([candidates_df, pd.DataFrame([x.to_dict() for x in child_candidates])], ignore_index=True)
+                    if child_list:
+                        list_pages_df = pd.concat([list_pages_df, pd.DataFrame([x.to_dict() for x in child_list])], ignore_index=True)
+                    if child_entry:
+                        entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
+
+
+            st.success(f"Step4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+            st.markdown("**step4_candidates.csv**")
+            st.dataframe(candidates_df, use_container_width=True, height=220)
+            to_download_buttons(candidates_df, "step4_candidates")
+            st.markdown("**list_pages.csv**")
+            st.dataframe(list_pages_df, use_container_width=True, height=220)
+            to_download_buttons(list_pages_df, "list_pages")
+            st.markdown("**entry_pages.csv**")
+            st.dataframe(entry_pages_df, use_container_width=True, height=220)
+            to_download_buttons(entry_pages_df, "entry_pages")
             st.stop()
 
         entities = build_entities(raw_data)
@@ -232,7 +458,7 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
         to_download_buttons(step3_df, "step3_decisions")
         st.code(step3_df.to_json(orient="records", indent=2, force_ascii=False), language="json")
 
-        st.subheader("Step 4 - 列表页发现（只下探1层）")
+        st.subheader("Step 4 - 列表页发现（默认下探1层，条件命中可到2层）")
         result_set = {"pass"} if step4_source == "pass" else ({"review"} if step4_source == "review" else {"pass", "review"})
 
         decision_by_id = {int(x["id"]): x for x in step3_df.to_dict("records")}
@@ -244,16 +470,35 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
             if d["result"] not in result_set:
                 continue
             if d["type"] in {"third_party_platform", "official_platform", "construction_platform"}:
-                continue  # 硬边界：Step4 不处理第三方平台
+                continue  # Step4 先聚焦非平台域，降低噪音
             step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
 
         discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+        candidates = discoverer.discover_candidates(step4_inputs)
         list_pages, entry_pages = discoverer.discover(step4_inputs)
 
-        list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
-        entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+        candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
+        list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+        entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
-        st.success(f"Step 4 完成：列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+        if step5_api_key.strip() and not candidates_df.empty:
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            next_urls = run_ai_entry_drilldown(candidates_df, judge)
+            if next_urls:
+                drill_inputs = [Step4Input(id=200000 + i, url=u, step3_result="review", step3_type="other") for i, u in enumerate(next_urls)]
+                child_candidates = discoverer.discover_candidates(drill_inputs)
+                child_list, child_entry = discoverer.discover(drill_inputs)
+                if child_candidates:
+                    candidates_df = pd.concat([candidates_df, pd.DataFrame([x.to_dict() for x in child_candidates])], ignore_index=True)
+                if child_list:
+                    list_pages_df = pd.concat([list_pages_df, pd.DataFrame([x.to_dict() for x in child_list])], ignore_index=True)
+                if child_entry:
+                    entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
+
+        st.success(f"Step 4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+        st.markdown("**step4_candidates.csv**")
+        st.dataframe(candidates_df, use_container_width=True, height=220)
+        to_download_buttons(candidates_df, "step4_candidates")
 
         st.markdown("**list_pages.csv**")
         st.dataframe(list_pages_df, use_container_width=True, height=220)
@@ -262,6 +507,19 @@ if st.button("运行 Step1 + Step2 + Step3 + Step4", type="primary"):
         st.markdown("**entry_pages.csv**")
         st.dataframe(entry_pages_df, use_container_width=True, height=220)
         to_download_buttons(entry_pages_df, "entry_pages")
+
+        if auto_run_step5:
+            if not step5_api_key.strip():
+                st.warning("默认自动运行 Step5，但未填写 API Key，已跳过")
+            else:
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                step5_rows = candidates_df.to_dict("records") if not candidates_df.empty else list_pages_df.to_dict("records")
+                decisions = judge.judge_rows(step5_rows)
+                step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
+                st.subheader("Step 5 - 最终语义判定")
+                st.success(f"Step 5 完成：{len(step5_df)} 条")
+                st.dataframe(step5_df, use_container_width=True, height=220)
+                to_download_buttons(step5_df, "step5_decisions")
 
     except Exception as exc:
         st.error(str(exc))
