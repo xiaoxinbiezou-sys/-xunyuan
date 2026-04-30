@@ -201,15 +201,6 @@ else:
 if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 Step1 + Step2 + Step3 + Step4", type="primary"):
     raw_data: list[dict] = []
     try:
-        if uploaded_file:
-            raw_data.extend(parse_file(uploaded_file))
-        if text_input.strip():
-            raw_data.extend({"name": normalize(line)} for line in text_input.split("\n") if normalize(line))
-
-        if not raw_data:
-            st.warning("请输入实体数据")
-            st.stop()
-
         if run_mode == "step5_only":
             if not uploaded_file:
                 st.warning("请上传 Step5 输入文件")
@@ -225,6 +216,15 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             st.success(f"Step5 完成：{len(out_df)} 条最终判定")
             st.dataframe(out_df, use_container_width=True, height=240)
             to_download_buttons(out_df, "step5_decisions")
+            st.stop()
+
+        if uploaded_file:
+            raw_data.extend(parse_file(uploaded_file))
+        if text_input.strip():
+            raw_data.extend({"name": normalize(line)} for line in text_input.split("\n") if normalize(line))
+
+        if not raw_data:
+            st.warning("请输入实体数据")
             st.stop()
 
         if run_mode == "step4_only":
