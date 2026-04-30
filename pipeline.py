@@ -126,6 +126,22 @@ class EntryPageRecord:
         return asdict(self)
 
 
+
+
+@dataclass(slots=True)
+class Step4Candidate:
+    source_url: str
+    final_url: str
+    candidate_type: str
+    list_likelihood: float
+    entry_likelihood: float
+    triggered_rules: list[str] | None = None
+    demotion_reason: str | None = None
+    drilldown_trace: list[str] | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
 @dataclass(slots=True)
 class PageFeatures:
     final_url: str
@@ -565,6 +581,32 @@ class Step4Discoverer:
         for sub in self.select_candidate_links(final_url, features.links)[:3]:
             found += self._drill_for_list(source_url, self.normalize_url(final_url), sub, list_pages, depth + 1, trace + [self.normalize_url(final_url)])
         return found
+    def discover_candidates(self, rows: Iterable[Step4Input]) -> list[Step4Candidate]:
+        candidates: list[Step4Candidate] = []
+        for row in rows:
+            source_url = self.normalize_url(row.url)
+            fetched = self.fetch(source_url)
+            if fetched is None:
+                continue
+            final_url, _, html = fetched
+            features = self.extract_features(final_url, html)
+            is_list, conf, _, triggered, demotion = self.is_list_page(features)
+            is_entry = self.is_entry_page(features)
+            ctype = "list_like" if is_list else (self.classify_non_list_page_type(features) if is_entry else "general_info")
+            candidates.append(
+                Step4Candidate(
+                    source_url=source_url,
+                    final_url=self.normalize_url(final_url),
+                    candidate_type=ctype,
+                    list_likelihood=conf / 100.0,
+                    entry_likelihood=0.9 if is_entry else 0.2,
+                    triggered_rules=triggered,
+                    demotion_reason=demotion,
+                    drilldown_trace=[self.normalize_url(final_url)],
+                )
+            )
+        return candidates
+
     def fetch(self, url: str) -> tuple[str, int, str] | None:
         try:
             resp = self.session.get(url, timeout=self.timeout, headers={"User-Agent": "Mozilla/5.0"})

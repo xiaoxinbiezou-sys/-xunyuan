@@ -242,12 +242,17 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
 
             step4_inputs = [Step4Input(id=i + 1, url=u, step3_result=step3_results[i], step3_type=step3_types[i]) for i, u in enumerate(urls) if str(u).strip()]
             discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            candidates = discoverer.discover_candidates(step4_inputs)
             list_pages, entry_pages = discoverer.discover(step4_inputs)
 
+            candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
             list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
             entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
 
-            st.success(f"Step4 完成：列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+            st.success(f"Step4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+            st.markdown("**step4_candidates.csv**")
+            st.dataframe(candidates_df, use_container_width=True, height=220)
+            to_download_buttons(candidates_df, "step4_candidates")
             st.markdown("**list_pages.csv**")
             st.dataframe(list_pages_df, use_container_width=True, height=220)
             to_download_buttons(list_pages_df, "list_pages")
@@ -313,12 +318,17 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
 
         discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+        candidates = discoverer.discover_candidates(step4_inputs)
         list_pages, entry_pages = discoverer.discover(step4_inputs)
 
+        candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
         list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
         entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
 
-        st.success(f"Step 4 完成：列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+        st.success(f"Step 4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
+        st.markdown("**step4_candidates.csv**")
+        st.dataframe(candidates_df, use_container_width=True, height=220)
+        to_download_buttons(candidates_df, "step4_candidates")
 
         st.markdown("**list_pages.csv**")
         st.dataframe(list_pages_df, use_container_width=True, height=220)
