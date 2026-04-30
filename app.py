@@ -187,7 +187,8 @@ with st.sidebar:
     step5_model = st.text_input("Model", value="deepseek-chat")
     step5_api_key = st.text_input("Step5 API Key", type="password")
     step5_base_url = st.text_input("Step5 Base URL", value="")
-    auto_run_step5 = st.checkbox("Full Pipeline 自动运行 Step5", value=False)
+
+auto_run_step5 = run_mode == "full_pipeline"
 
 if run_mode == "full_pipeline":
     uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
@@ -341,7 +342,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
 
         if auto_run_step5:
             if not step5_api_key.strip():
-                st.warning("已启用自动 Step5，但未填写 API Key，已跳过")
+                st.warning("默认自动运行 Step5，但未填写 API Key，已跳过")
             else:
                 judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
                 step5_rows = candidates_df.to_dict("records") if not candidates_df.empty else list_pages_df.to_dict("records")
