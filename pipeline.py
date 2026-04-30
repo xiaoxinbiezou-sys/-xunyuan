@@ -490,7 +490,21 @@ class Step4Discoverer:
                 )
                 continue
 
-            if not self.is_entry_page(features):
+            is_entry = self.is_entry_page(features)
+            page_type = self.classify_non_list_page_type(features)
+            if not is_entry:
+                entry_pages.append(
+                    EntryPageRecord(
+                        url=self.normalize_url(final_url),
+                        title=features.title,
+                        child_links_checked=0,
+                        list_pages_found_count=0,
+                        page_type=page_type,
+                        triggered_rules=triggered_rules,
+                        demotion_reason=demotion_reason,
+                        drilldown_trace=[self.normalize_url(final_url)],
+                    )
+                )
                 continue
 
             candidates = self.select_candidate_links(final_url, features.links)
@@ -512,7 +526,8 @@ class Step4Discoverer:
                     child_links_checked=len(candidates),
                     list_pages_found_count=found_count,
                     page_type=self.classify_non_list_page_type(features),
-                    triggered_rules=["ENTRY_PAGE_DISCOVERY"],
+                    triggered_rules=(triggered_rules or []) + ["ENTRY_PAGE_DISCOVERY"],
+                    demotion_reason=demotion_reason,
                     drilldown_trace=[self.normalize_url(final_url)],
                 )
             )
