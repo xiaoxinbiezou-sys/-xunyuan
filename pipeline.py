@@ -903,6 +903,24 @@ class Step5LLMJudge:
         reason = str(result.get("reason") or "")
         return Step5Decision(url=url, final_type=final_type, confidence=confidence, reason=reason, provider=self.provider, model=self.model)
 
+
+    def judge_entry_candidate(self, row: dict[str, Any]) -> dict[str, Any]:
+        url = str(row.get("final_url") or row.get("url") or "")
+        title = str(row.get("title") or "")
+        text = str(row.get("text") or "")[:4000]
+        prompt = (
+            "判断当前页是否是entry_page。只输出JSON，字段: is_entry_page(bool), reason(string), next_urls(array<string>)。"
+            "entry_page定义：当前页本身不是列表页，但存在明确通向采购机会/招标列表/中标列表/合同列表/供应商系统/采购平台的链接。"
+            "不要因 procurement/vendor/supplier/bidding 词就判true。"
+            "next_urls最多5个，按优先级，排除 policy/manual/contact/about/login-only/FAQ/news。"
+            "URL: " + url + "\nTITLE: " + title + "\nTEXT: " + text
+        )
+        result = self._call_model(prompt)
+        is_entry = bool(result.get("is_entry_page") is True)
+        next_urls = result.get("next_urls") if isinstance(result.get("next_urls"), list) else []
+        reason = str(result.get("reason") or "")
+        return {"url": url, "is_entry_page": is_entry, "next_urls": [str(x) for x in next_urls[:5]], "reason": reason}
+
     def _call_model(self, prompt: str) -> dict[str, Any]:
         endpoint, headers, payload = self._build_request(prompt)
         resp = requests.post(endpoint, headers=headers, json=payload, timeout=self.timeout)
