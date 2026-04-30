@@ -9,6 +9,7 @@ from keyword_generator import Entity, KeywordGenerator
 from pipeline import (
     CustomJsonSearchProvider,
     SearchRunner,
+    SearchResult,
     SerperProvider,
     Step3Classifier,
     Step4Discoverer,
@@ -223,7 +224,7 @@ with st.sidebar:
 
     st.divider()
     st.header("运行模式")
-    run_mode = st.radio("选择流程", options=["full_pipeline", "step4_only", "step5_only"], index=0)
+    run_mode = st.radio("选择流程", options=["full_pipeline", "step2_uploaded", "step4_only", "step5_only"], index=0)
 
     st.divider()
     st.header("Step5 模型配置")
@@ -237,6 +238,9 @@ auto_run_step5 = run_mode == "full_pipeline"
 if run_mode == "full_pipeline":
     uploaded_file = st.file_uploader("上传实体文件（json/csv/xlsx）", type=["json", "csv", "xlsx"])
     text_input = st.text_area("或粘贴实体（每行一个）", placeholder="City of Austin\nTravis County")
+elif run_mode == "step2_uploaded":
+    uploaded_file = st.file_uploader("上传 Step2 搜索结果文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
+    text_input = ""
 elif run_mode == "step4_only":
     uploaded_file = st.file_uploader("上传 Step4 输入文件（csv/xlsx/json）", type=["json", "csv", "xlsx"])
     text_input = ""
@@ -262,6 +266,86 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             st.success(f"Step5 完成：{len(out_df)} 条最终判定")
             st.dataframe(out_df, use_container_width=True, height=240)
             to_download_buttons(out_df, "step5_decisions")
+            st.stop()
+
+        if run_mode == "step2_uploaded":
+            if not uploaded_file:
+                st.warning("请上传 Step2 搜索结果文件")
+                st.stop()
+            df = read_tabular_file(uploaded_file)
+            col_map = {c.lower(): c for c in df.columns}
+            if "url" not in col_map:
+                st.error("Step2 文件必须包含 url 列")
+                st.stop()
+            step2_results: list[SearchResult] = []
+            for i, r in enumerate(df.to_dict("records"), start=1):
+                step2_results.append(
+                    SearchResult(
+                        id=int(r.get(col_map.get("id", ""), i) or i),
+                        entity_id=int(r.get(col_map.get("entity_id", ""), 1) or 1),
+                        query_text=str(r.get(col_map.get("query_text", ""), "uploaded_step2") or "uploaded_step2"),
+                        query_type=str(r.get(col_map.get("query_type", ""), "uploaded") or "uploaded"),
+                        query_priority=int(r.get(col_map.get("query_priority", ""), 1) or 1),
+                        rank=int(r.get(col_map.get("rank", ""), i) or i),
+                        title=str(r.get(col_map.get("title", ""), "") or ""),
+                        snippet=str(r.get(col_map.get("snippet", ""), "") or ""),
+                        url=str(r.get(col_map["url"], "") or ""),
+                        provider=str(r.get(col_map.get("provider", ""), "uploaded") or "uploaded"),
+                    )
+                )
+
+            st.subheader("Step 2(上传) - 搜索结果")
+            step2_df = pd.DataFrame([r.to_dict() for r in step2_results])
+            st.dataframe(step2_df, use_container_width=True, height=220)
+            to_download_buttons(step2_df, "step2_search_results_uploaded")
+
+            st.subheader("Step 3 - pass/review/reject 分类")
+            classifier = Step3Classifier(
+                competitor_patterns=parse_multiline_patterns(competitor_text),
+                irrelevant_patterns=parse_multiline_patterns(irrelevant_text),
+                third_party_patterns=parse_multiline_patterns(third_party_text),
+                official_patterns=parse_multiline_patterns(official_text),
+                construction_patterns=parse_multiline_patterns(construction_text),
+            )
+            decisions = classifier.classify(step2_results)
+            step3_df = pd.DataFrame([d.to_dict() for d in decisions])
+            st.dataframe(step3_df, use_container_width=True, height=200)
+            to_download_buttons(step3_df, "step3_decisions")
+
+            result_set = {"pass"} if step4_source == "pass" else ({"review"} if step4_source == "review" else {"pass", "review"})
+            decision_by_id = {int(x["id"]): x for x in step3_df.to_dict("records")}
+            step4_inputs: list[Step4Input] = []
+            for row in step2_results:
+                d = decision_by_id.get(row.id)
+                if not d or d["result"] not in result_set:
+                    continue
+                if d["type"] in {"third_party_platform", "official_platform", "construction_platform"}:
+                    continue
+                step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
+
+            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            candidates = discoverer.discover_candidates(step4_inputs)
+            list_pages, entry_pages = discoverer.discover(step4_inputs)
+            candidates_df = pd.DataFrame([x.to_dict() for x in candidates])
+            list_pages_df = pd.DataFrame([x.to_dict() for x in list_pages])
+            entry_pages_df = pd.DataFrame([x.to_dict() for x in entry_pages])
+            st.markdown("**step4_candidates.csv**")
+            st.dataframe(candidates_df, use_container_width=True, height=220)
+            to_download_buttons(candidates_df, "step4_candidates")
+            st.markdown("**list_pages.csv**")
+            st.dataframe(list_pages_df, use_container_width=True, height=220)
+            to_download_buttons(list_pages_df, "list_pages")
+            st.markdown("**entry_pages.csv**")
+            st.dataframe(entry_pages_df, use_container_width=True, height=220)
+            to_download_buttons(entry_pages_df, "entry_pages")
+
+            if step5_api_key.strip() and auto_run_step5:
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                decisions5 = judge.judge_rows(candidates_df.to_dict("records"))
+                step5_df = pd.DataFrame([x.to_dict() for x in decisions5])
+                st.markdown("**step5_decisions.csv**")
+                st.dataframe(step5_df, use_container_width=True, height=220)
+                to_download_buttons(step5_df, "step5_decisions")
             st.stop()
 
         if uploaded_file:
