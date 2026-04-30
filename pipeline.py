@@ -39,7 +39,8 @@ OPEN_KEYWORDS = ["open date", "opening date", "start date"]
 
 ENTRY_POSITIVE = [
     "bids", "open bids", "current bids", "solicitations", "opportunities", "rfp", "rfq", "contracts",
-    "awards", "closed bids", "archive", "agencies", "vendors", "directory",
+    "awards", "closed bids", "archive", "agencies", "vendors", "directory", "event", "events",
+    "view all events", "public bid site", "vendor portal", "supplier portal",
 ]
 ENTRY_NEGATIVE = ["login", "register", "manual", "guide", "policy", "contact", "jobs", "news", "minutes", "agenda"]
 
@@ -72,10 +73,15 @@ class Step3Decision:
     id: int
     result: str
     type: str
+    reason_codes: list[str] | None = None
+    matched_pattern: str | None = None
+    conflict: bool = False
+    conflict_candidates: list[str] | None = None
+    winner_rule_id: str | None = None
 
     def to_dict(self) -> dict:
         payload = asdict(self)
-        return {"id": payload["id"], "result": payload["result"], "type": payload["type"]}
+        return payload
 
 
 @dataclass(slots=True)
@@ -95,6 +101,11 @@ class ListPageRecord:
     title: str
     status_code: int
     confidence: int
+    page_type: str = "list_page"
+    list_gate_results: dict[str, bool] | None = None
+    triggered_rules: list[str] | None = None
+    demotion_reason: str | None = None
+    drilldown_trace: list[str] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -106,10 +117,32 @@ class EntryPageRecord:
     title: str
     child_links_checked: int
     list_pages_found_count: int
+    page_type: str = "entry_page"
+    triggered_rules: list[str] | None = None
+    demotion_reason: str | None = None
+    drilldown_trace: list[str] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
+
+
+
+@dataclass(slots=True)
+class Step4Candidate:
+    source_url: str
+    final_url: str
+    title: str
+    text: str
+    candidate_type: str
+    list_likelihood: float
+    entry_likelihood: float
+    triggered_rules: list[str] | None = None
+    demotion_reason: str | None = None
+    drilldown_trace: list[str] | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 @dataclass(slots=True)
 class PageFeatures:
@@ -307,47 +340,91 @@ class Step3Classifier:
         snippet = (row.snippet or "").strip().lower()
         path = (urlparse(url).path or "").lower()
 
-        item_type = self._resolve_type(url)
+        item_type, matched_pattern, conflict, conflict_candidates, winner_rule_id = self._resolve_type(url, title)
         if item_type not in TYPE_ENUM:
             item_type = "other"
 
-        if self._is_file_url(path) or self._match_any(url, URL_REJECT_TERMS_GROUPS):
-            return Step3Decision(id=row.id, result="reject", type=item_type)
+        reason_codes: list[str] = []
+        if self._is_file_url(path):
+            reason_codes.append("HARD_REJECT_FILE")
+            return Step3Decision(id=row.id, result="reject", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
         if item_type in {"competitor", "irrelevant"}:
-            return Step3Decision(id=row.id, result="reject", type=item_type)
-        if item_type in {"third_party_platform", "official_platform", "construction_platform"}:
-            return Step3Decision(id=row.id, result="pass", type=item_type)
+            reason_codes.append(f"HARD_REJECT_{item_type.upper()}")
+            return Step3Decision(id=row.id, result="reject", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+
+        login_like = self._contains_any(f"{url} {title} {snippet}", ["login", "sign in", "signin", "register", "registration", "supplier portal", "vendor self service", "vss", "public bid site"])
+        if login_like:
+            if item_type in {"official_platform", "third_party_platform", "construction_platform"}:
+                reason_codes.append("LOGIN_PORTAL_REVIEW")
+                return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+            reason_codes.append("LOGIN_PORTAL_REVIEW_OTHER")
+            return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+
+        strong_irrelevant_terms = ["auction", "youtube", "youtu.be", "facebook", "instagram", "twitter", "x.com", "tiktok", "linkedin"]
+        if self._contains_any(url, strong_irrelevant_terms):
+            reason_codes.append("HARD_REJECT_STRONG_IRRELEVANT_URL")
+            return Step3Decision(id=row.id, result="reject", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+
+        if item_type in {"third_party_platform", "official_platform"}:
+            reason_codes.append("HARD_PASS_PLATFORM")
+            return Step3Decision(id=row.id, result="pass", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+        if item_type == "construction_platform":
+            reason_codes.append("CONSTRUCTION_REVIEW_DEFAULT")
+            return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=reason_codes, matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
 
         high_intent = self._is_high_intent_domain(url)
         if high_intent:
             if self._contains_any(url, HIGH_INTENT_URL_PASS_TERMS):
-                return Step3Decision(id=row.id, result="pass", type=item_type)
+                return Step3Decision(id=row.id, result="pass", type=item_type, reason_codes=["HIGH_INTENT_URL_PASS"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
             if self._contains_any(title, HIGH_INTENT_TITLE_PASS_TERMS):
-                return Step3Decision(id=row.id, result="pass", type=item_type)
-            return Step3Decision(id=row.id, result="review", type=item_type)
+                return Step3Decision(id=row.id, result="pass", type=item_type, reason_codes=["HIGH_INTENT_TITLE_PASS"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+            return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=["HIGH_INTENT_REVIEW"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
 
         if self._match_any(title, GENERAL_TITLE_REJECT_TERMS_GROUPS):
-            return Step3Decision(id=row.id, result="reject", type=item_type)
+            return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=["TITLE_REVIEW_FROM_REJECT_TERM"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
         if self._contains_any(title, GENERAL_TITLE_DESC_REJECT_TERMS) or self._contains_any(snippet, GENERAL_TITLE_DESC_REJECT_TERMS):
-            return Step3Decision(id=row.id, result="reject", type=item_type)
+            return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=["DESC_REVIEW_FROM_REJECT_TERM"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
         if self._contains_any(title, GENERAL_TITLE_PASS_TERMS):
-            return Step3Decision(id=row.id, result="pass", type=item_type)
+            return Step3Decision(id=row.id, result="pass", type=item_type, reason_codes=["TITLE_PASS"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
         if self._contains_any(title, GENERAL_TITLE_REVIEW_ONLY_TERMS):
-            return Step3Decision(id=row.id, result="review", type=item_type)
-        return Step3Decision(id=row.id, result="review", type=item_type)
+            return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=["TITLE_REVIEW"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
+        return Step3Decision(id=row.id, result="review", type=item_type, reason_codes=["DEFAULT_REVIEW"], matched_pattern=matched_pattern, conflict=conflict, conflict_candidates=conflict_candidates, winner_rule_id=winner_rule_id)
 
-    def _resolve_type(self, url: str) -> str:
-        if self._match_patterns(url, self.competitor_patterns):
-            return "competitor"
-        if self._match_patterns(url, self.irrelevant_patterns):
-            return "irrelevant"
-        if self._match_patterns(url, self.third_party_patterns):
-            return "third_party_platform"
-        if self._match_patterns(url, self.official_patterns):
-            return "official_platform"
-        if self._match_patterns(url, self.construction_patterns):
-            return "construction_platform"
-        return "other"
+    def _resolve_type(self, url: str, title: str) -> tuple[str, str | None, bool, list[str], str | None]:
+        hits: list[tuple[str, str]] = []
+        for p in self.competitor_patterns:
+            if self._match_pattern(url, p):
+                hits.append(("competitor", p))
+        for p in self.irrelevant_patterns:
+            if self._match_pattern(url, p):
+                hits.append(("irrelevant", p))
+        for p in self.official_patterns:
+            if self._match_pattern(url, p):
+                hits.append(("official_platform", p))
+        for p in self.third_party_patterns:
+            if self._match_pattern(url, p):
+                hits.append(("third_party_platform", p))
+        for p in self.construction_patterns:
+            if self._match_pattern(url, p):
+                hits.append(("construction_platform", p))
+
+        host = urlparse(url).netloc.lower().split(":")[0]
+        path = (urlparse(url).path or "").lower()
+        if host.endswith(".gov") or host.endswith(".mil"):
+            hits.append(("official_platform", "suffix:.gov/.mil"))
+        if host.endswith(".edu") and self._contains_any(f"{title} {path}", ["procurement", "purchasing", "bids", "contracts", "solicitations", "vendor", "sourcing"]):
+            hits.append(("official_platform", "suffix:.edu+guard"))
+
+        priority = ["competitor", "irrelevant", "official_platform", "third_party_platform", "construction_platform", "other"]
+        conflict = len({h[0] for h in hits}) > 1
+        if not hits:
+            return "other", None, False, [], None
+        winner = sorted(hits, key=lambda x: priority.index(x[0]))[0]
+        return winner[0], winner[1], conflict, [f"{k}:{v}" for k, v in hits], f"priority:{winner[0]}"
+
+    @staticmethod
+    def _match_pattern(url: str, pattern: str) -> bool:
+        return Step3Classifier._match_patterns(url, [pattern])
 
     @staticmethod
     def _is_file_url(path: str) -> bool:
@@ -392,11 +469,12 @@ class Step3Classifier:
 
 
 class Step4Discoverer:
-    """当前页能直接展示多条记录就收；否则如果是入口页就下探一层收子列表页；否则丢弃。"""
+    """严格列表页识别：优先保证 list_page 准确性；入口页可条件下探至2层。"""
 
-    def __init__(self, timeout: float = 20.0, max_child_links: int = 10) -> None:
+    def __init__(self, timeout: float = 20.0, max_child_links: int = 10, max_depth: int = 2) -> None:
         self.timeout = timeout
         self.max_child_links = max_child_links
+        self.max_depth = max_depth
         self.session = requests.Session()
 
     def discover(self, rows: Iterable[Step4Input]) -> tuple[list[ListPageRecord], list[EntryPageRecord]]:
@@ -411,7 +489,7 @@ class Step4Discoverer:
             final_url, status_code, html = fetched
             features = self.extract_features(final_url, html)
 
-            is_list, confidence = self.is_list_page(features)
+            is_list, confidence, gate_results, triggered_rules, demotion_reason = self.is_list_page(features)
             if is_list:
                 list_pages.append(
                     ListPageRecord(
@@ -422,35 +500,42 @@ class Step4Discoverer:
                         title=features.title,
                         status_code=status_code,
                         confidence=confidence,
+                        list_gate_results=gate_results,
+                        triggered_rules=triggered_rules,
+                        demotion_reason=demotion_reason,
+                        drilldown_trace=[self.normalize_url(final_url)],
                     )
                 )
                 continue
 
-            if not self.is_entry_page(features):
+            is_entry = self.is_entry_page(features)
+            page_type = self.classify_non_list_page_type(features)
+            if not is_entry:
+                entry_pages.append(
+                    EntryPageRecord(
+                        url=self.normalize_url(final_url),
+                        title=features.title,
+                        child_links_checked=0,
+                        list_pages_found_count=0,
+                        page_type=page_type,
+                        triggered_rules=triggered_rules,
+                        demotion_reason=demotion_reason,
+                        drilldown_trace=[self.normalize_url(final_url)],
+                    )
+                )
                 continue
 
             candidates = self.select_candidate_links(final_url, features.links)
             found_count = 0
             for link in candidates:
-                child_fetched = self.fetch(link)
-                if child_fetched is None:
-                    continue
-                child_final_url, child_status, child_html = child_fetched
-                child_features = self.extract_features(child_final_url, child_html)
-                child_is_list, child_conf = self.is_list_page(child_features)
-                if child_is_list:
-                    found_count += 1
-                    list_pages.append(
-                        ListPageRecord(
-                            source_url=source_url,
-                            final_url=self.normalize_url(child_final_url),
-                            discovered_from="entry_page",
-                            parent_entry_url=self.normalize_url(final_url),
-                            title=child_features.title,
-                            status_code=child_status,
-                            confidence=child_conf,
-                        )
-                    )
+                found_count += self._drill_for_list(
+                    source_url=source_url,
+                    parent_url=self.normalize_url(final_url),
+                    link=link,
+                    list_pages=list_pages,
+                    depth=1,
+                    trace=[self.normalize_url(final_url)],
+                )
 
             entry_pages.append(
                 EntryPageRecord(
@@ -458,10 +543,73 @@ class Step4Discoverer:
                     title=features.title,
                     child_links_checked=len(candidates),
                     list_pages_found_count=found_count,
+                    page_type=self.classify_non_list_page_type(features),
+                    triggered_rules=(triggered_rules or []) + ["ENTRY_PAGE_DISCOVERY"],
+                    demotion_reason=demotion_reason,
+                    drilldown_trace=[self.normalize_url(final_url)],
                 )
             )
 
         return self._dedupe_list_pages(list_pages), entry_pages
+
+
+    def _drill_for_list(self, source_url: str, parent_url: str, link: str, list_pages: list[ListPageRecord], depth: int, trace: list[str]) -> int:
+        fetched = self.fetch(link)
+        if fetched is None:
+            return 0
+        final_url, status_code, html = fetched
+        features = self.extract_features(final_url, html)
+        is_list, conf, gate_results, triggered_rules, demotion_reason = self.is_list_page(features)
+        if is_list:
+            list_pages.append(
+                ListPageRecord(
+                    source_url=source_url,
+                    final_url=self.normalize_url(final_url),
+                    discovered_from="entry_page" if depth == 1 else "entry_page_depth2",
+                    parent_entry_url=parent_url,
+                    title=features.title,
+                    status_code=status_code,
+                    confidence=conf,
+                    list_gate_results=gate_results,
+                    triggered_rules=triggered_rules,
+                    demotion_reason=demotion_reason,
+                    drilldown_trace=trace + [self.normalize_url(final_url)],
+                )
+            )
+            return 1
+        if depth >= self.max_depth or not self._has_strong_entry_signal(features):
+            return 0
+        found = 0
+        for sub in self.select_candidate_links(final_url, features.links)[:3]:
+            found += self._drill_for_list(source_url, self.normalize_url(final_url), sub, list_pages, depth + 1, trace + [self.normalize_url(final_url)])
+        return found
+    def discover_candidates(self, rows: Iterable[Step4Input]) -> list[Step4Candidate]:
+        candidates: list[Step4Candidate] = []
+        for row in rows:
+            source_url = self.normalize_url(row.url)
+            fetched = self.fetch(source_url)
+            if fetched is None:
+                continue
+            final_url, _, html = fetched
+            features = self.extract_features(final_url, html)
+            is_list, conf, _, triggered, demotion = self.is_list_page(features)
+            is_entry = self.is_entry_page(features)
+            ctype = "list_like" if is_list else (self.classify_non_list_page_type(features) if is_entry else "general_info")
+            candidates.append(
+                Step4Candidate(
+                    source_url=source_url,
+                    final_url=self.normalize_url(final_url),
+                    title=features.title,
+                    text=features.text[:4000],
+                    candidate_type=ctype,
+                    list_likelihood=conf / 100.0,
+                    entry_likelihood=0.9 if is_entry else 0.2,
+                    triggered_rules=triggered,
+                    demotion_reason=demotion,
+                    drilldown_trace=[self.normalize_url(final_url)],
+                )
+            )
+        return candidates
 
     def fetch(self, url: str) -> tuple[str, int, str] | None:
         try:
@@ -524,43 +672,62 @@ class Step4Discoverer:
             records_count=records_count,
         )
 
-    def is_list_page(self, f: PageFeatures) -> tuple[bool, int]:
-        if f.single_object:
-            return False, 0
+    def is_list_page(self, f: PageFeatures) -> tuple[bool, int, dict[str, bool], list[str], str | None]:
+        gates = {
+            "not_single_object": not f.single_object,
+            "record_count": f.records_count >= 5,
+            "structure": (f.table_rows >= 5) or (f.repeated_blocks >= 5 and f.titled_link_blocks >= 5) or (f.date_count >= 3 and f.records_count >= 5),
+            "controls": f.has_pagination or f.table_has_header,
+            "field_hits": False,
+        }
+        triggered: list[str] = []
+        demotion_reason: str | None = None
+
+        if not gates["not_single_object"]:
+            return False, 0, gates, ["SINGLE_OBJECT"], "SINGLE_OBJECT"
         if f.records_count < 3 and f.table_rows < 3:
-            return False, 0
+            return False, 0, gates, ["TOO_FEW_RECORDS"], "TOO_FEW_RECORDS"
         if f.mostly_long_text and f.records_count < 3:
-            return False, 0
+            return False, 0, gates, ["LONG_TEXT_INTRO"], "LONG_TEXT_INTRO"
 
-        if f.records_count >= 3 and f.date_count >= 3:
-            return True, 95
-        if f.table_rows >= 3 and f.table_has_header:
-            return True, 92
-        if f.repeated_blocks >= 3 and f.titled_link_blocks >= 3:
-            return True, 90
+        text = f"{f.title} {f.text}".lower()
+        non_list_terms = ["about us", "how to", "resource", "overview", "schedule", "calendar", "article", "blog", "guide"]
+        if any(t in text for t in non_list_terms) and f.records_count < 8:
+            return False, 0, gates, ["NON_LIST_TERM_HIT"], "NON_LIST_TERM_HIT"
+        if ("search" in text and ("open solicitations" in text or "awarded solicitations" in text)) and f.records_count < 3:
+            return False, 0, gates, ["SEARCH_SHELL_PAGE"], "SEARCH_SHELL_PAGE"
+        field_hits = sum(1 for k in ["due", "deadline", "posted", "status", "number", "solicitation", "rfp", "rfq"] if k in text)
+        gates["field_hits"] = field_hits >= 2
+        if ("account login" in text or "password" in text or "userid" in text) and not f.has_pagination:
+            return False, 0, gates, ["LOGIN_PORTAL"], "LOGIN_PORTAL"
 
-        score = 0
-        if f.repeated_blocks >= 3:
-            score += 30
-        if f.titled_link_blocks >= 3:
-            score += 20
-        if f.date_count >= 3:
-            score += 20
-        if f.keyword_signal_count >= 1:
-            score += 15
-        if f.table_rows >= 1:
+        featured_like = any(k in text for k in ["featured", "highlights", "latest", "news", "resources"])
+        path = urlparse(f.final_url).path.lower()
+        if (
+            any(k in path for k in ["bidding-opportunities", "archived-bidding-opportunities", "bid-opportunities"]) and
+            f.records_count >= 4 and
+            (f.repeated_blocks >= 4 or f.table_rows >= 4) and
+            field_hits >= 1
+        ):
+            triggered.append("CONTROLLED_PATH_EXEMPTION")
+            return True, 78, gates, triggered, None
+
+        if featured_like and not gates["controls"]:
+            return False, 20, gates, ["FEATURED_NO_CONTROLS"], "FEATURED_NO_CONTROLS"
+        if not all(gates.values()):
+            return False, 40, gates, ["LIST_HARD_GATES_FAILED"], "LIST_HARD_GATES_FAILED"
+
+        score = 70
+        if f.table_rows >= 8:
             score += 10
+            triggered.append("TABLE_DENSE")
         if f.has_pagination:
             score += 10
-
-        if f.single_object:
-            score -= 50
-        if f.repeated_blocks < 3 and f.table_rows < 3:
-            score -= 30
-        if f.mostly_long_text:
-            score -= 30
-
-        return (score >= 60), max(0, min(100, score))
+            triggered.append("PAGINATION")
+        if f.date_count >= 5:
+            score += 5
+            triggered.append("DATE_DENSE")
+        return True, max(0, min(100, score)), gates, triggered, None
 
     def is_entry_page(self, f: PageFeatures) -> bool:
         text = f"{f.title} {f.text}".lower()
@@ -575,17 +742,32 @@ class Step4Discoverer:
                 return True
         return any(p in text for p in ENTRY_POSITIVE)
 
+    def classify_non_list_page_type(self, f: PageFeatures) -> str:
+        text = f"{f.title} {f.text}".lower()
+        has_controls = f.has_pagination or f.table_has_header
+        if f.records_count >= 4 and (f.repeated_blocks >= 4 or f.titled_link_blocks >= 4) and not has_controls:
+            return "multi_detail_hub"
+        if "search" in text and ("open solicitations" in text or "awarded solicitations" in text):
+            return "search_shell"
+        return "entry_page"
+
+    def _has_strong_entry_signal(self, f: PageFeatures) -> bool:
+        text = f"{f.title} {f.text}".lower()
+        return any(k in text for k in ["view all", "public bid site", "bid opportunities", "solicitations", "open bids", "vendor portal", "supplier portal"])
+
     def select_candidate_links(self, page_url: str, links: list[tuple[str, str]]) -> list[str]:
         base_host = urlparse(page_url).netloc.lower()
+        allowed_external_hosts = {"smart.gep.com", "vendors.planetbids.com", "planetbids.com"}
         selected: list[str] = []
         seen: set[str] = set()
 
         for text, href in links:
             u = self.normalize_url(href)
             host = urlparse(u).netloc.lower()
-            if host != base_host:
-                continue
             combo = f"{text} {u}".lower()
+            strong_portal_link = any(k in combo for k in ["public bid site", "view all events", "bid opportunities", "open bids", "vendor portal", "supplier portal"])
+            if host != base_host and not (host in allowed_external_hosts and strong_portal_link):
+                continue
             if any(n in combo for n in ENTRY_NEGATIVE):
                 continue
             if not any(p in combo for p in ENTRY_POSITIVE):
@@ -672,3 +854,131 @@ def _get_by_dot_path(data: Any, path: str) -> Any:
             continue
         raise ValueError(f"Path not found: {path}")
     return node
+
+
+@dataclass(slots=True)
+class Step5Decision:
+    url: str
+    final_type: str
+    confidence: float
+    reason: str
+    provider: str
+    model: str
+    input_quality: str = "unknown"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class Step5LLMJudge:
+    """利用大模型对候选页面做最终类型判定。"""
+
+    def __init__(self, provider: str, model: str, api_key: str, base_url: str = "", timeout: float = 30.0) -> None:
+        self.provider = provider.strip().lower()
+        self.model = model.strip()
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip()
+        self.timeout = timeout
+
+    def judge_rows(self, rows: list[dict[str, Any]]) -> list[Step5Decision]:
+        out: list[Step5Decision] = []
+        for row in rows:
+            try:
+                out.append(self.judge_one(row))
+            except Exception as exc:
+                url = str(row.get("url") or row.get("final_url") or "")
+                out.append(
+                    Step5Decision(
+                        url=url,
+                        final_type="review_needed",
+                        confidence=0.0,
+                        reason=f"step5_row_error:{exc}",
+                        provider=self.provider,
+                        model=self.model,
+                        input_quality="error",
+                    )
+                )
+        return out
+
+    def judge_one(self, row: dict[str, Any]) -> Step5Decision:
+        url = str(row.get("url") or row.get("final_url") or "")
+        title = str(row.get("title") or "")
+        text = str(row.get("text") or "")[:4000]
+        page_type_hint = str(row.get("page_type") or "")
+        input_quality = "good"
+        if len(text.strip()) < 120:
+            input_quality = "low_text"
+        if text.count("?") > max(20, len(text) * 0.1):
+            input_quality = "garbled"
+
+        prompt = (
+            "你是招投标页面分类器。只输出JSON，字段: final_type, confidence, reason。"
+            "final_type只能是list_page/entry_page/multi_detail_hub/search_shell/general_info。"
+            "URL: " + url + "\nTITLE: " + title + "\nPAGE_TYPE_HINT: " + page_type_hint + "\nTEXT: " + text
+        )
+
+        result = self._call_model(prompt)
+        final_type = str(result.get("final_type") or "general_info")
+        confidence = float(result.get("confidence") or 0.5)
+        reason = str(result.get("reason") or "")
+        return Step5Decision(url=url, final_type=final_type, confidence=confidence, reason=reason, provider=self.provider, model=self.model, input_quality=input_quality)
+
+
+    def judge_entry_candidate(self, row: dict[str, Any]) -> dict[str, Any]:
+        url = str(row.get("final_url") or row.get("url") or "")
+        title = str(row.get("title") or "")
+        text = str(row.get("text") or "")[:4000]
+        prompt = (
+            "判断当前页是否是entry_page。只输出JSON，字段: is_entry_page(bool), reason(string), next_urls(array<string>)。"
+            "entry_page定义：当前页本身不是列表页，但存在明确通向采购机会/招标列表/中标列表/合同列表/供应商系统/采购平台的链接。"
+            "不要因 procurement/vendor/supplier/bidding 词就判true。"
+            "next_urls最多5个，按优先级，排除 policy/manual/contact/about/login-only/FAQ/news。"
+            "URL: " + url + "\nTITLE: " + title + "\nTEXT: " + text
+        )
+        result = self._call_model(prompt)
+        is_entry = bool(result.get("is_entry_page") is True)
+        next_urls = result.get("next_urls") if isinstance(result.get("next_urls"), list) else []
+        reason = str(result.get("reason") or "")
+        return {"url": url, "is_entry_page": is_entry, "next_urls": [str(x) for x in next_urls[:5]], "reason": reason}
+
+    def _call_model(self, prompt: str) -> dict[str, Any]:
+        endpoint, headers, payload = self._build_request(prompt)
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+
+        content = self._extract_content(data)
+        try:
+            return json.loads(content)
+        except Exception:
+            return {
+                "final_type": "review_needed",
+                "confidence": 0.2,
+                "reason": content[:300],
+                "is_entry_page": False,
+                "next_urls": [],
+            }
+
+    def _build_request(self, prompt: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+        if self.provider in {"deepseek", "qwen", "doubao", "openai_compatible"}:
+            base = self.base_url or "https://api.deepseek.com/v1"
+            endpoint = f"{base.rstrip('/')}/chat/completions"
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "你是一个严谨的网页分类器。"},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+            }
+            return endpoint, headers, payload
+        raise ValueError("Unsupported Step5 provider")
+
+    @staticmethod
+    def _extract_content(data: dict[str, Any]) -> str:
+        choices = data.get("choices") or []
+        if choices and isinstance(choices, list):
+            msg = choices[0].get("message") or {}
+            return str(msg.get("content") or "")
+        return "{}"
