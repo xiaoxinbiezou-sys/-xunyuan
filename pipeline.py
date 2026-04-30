@@ -132,6 +132,8 @@ class EntryPageRecord:
 class Step4Candidate:
     source_url: str
     final_url: str
+    title: str
+    text: str
     candidate_type: str
     list_likelihood: float
     entry_likelihood: float
@@ -597,6 +599,8 @@ class Step4Discoverer:
                 Step4Candidate(
                     source_url=source_url,
                     final_url=self.normalize_url(final_url),
+                    title=features.title,
+                    text=features.text[:4000],
                     candidate_type=ctype,
                     list_likelihood=conf / 100.0,
                     entry_likelihood=0.9 if is_entry else 0.2,
