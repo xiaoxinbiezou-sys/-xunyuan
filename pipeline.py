@@ -882,7 +882,20 @@ class Step5LLMJudge:
     def judge_rows(self, rows: list[dict[str, Any]]) -> list[Step5Decision]:
         out: list[Step5Decision] = []
         for row in rows:
-            out.append(self.judge_one(row))
+            try:
+                out.append(self.judge_one(row))
+            except Exception as exc:
+                url = str(row.get("url") or row.get("final_url") or "")
+                out.append(
+                    Step5Decision(
+                        url=url,
+                        final_type="review_needed",
+                        confidence=0.0,
+                        reason=f"step5_row_error:{exc}",
+                        provider=self.provider,
+                        model=self.model,
+                    )
+                )
         return out
 
     def judge_one(self, row: dict[str, Any]) -> Step5Decision:
@@ -931,7 +944,13 @@ class Step5LLMJudge:
         try:
             return json.loads(content)
         except Exception:
-            return {"final_type": "general_info", "confidence": 0.4, "reason": content[:300]}
+            return {
+                "final_type": "review_needed",
+                "confidence": 0.2,
+                "reason": content[:300],
+                "is_entry_page": False,
+                "next_urls": [],
+            }
 
     def _build_request(self, prompt: str) -> tuple[str, dict[str, str], dict[str, Any]]:
         if self.provider in {"deepseek", "qwen", "doubao", "openai_compatible"}:

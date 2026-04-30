@@ -130,6 +130,24 @@ def parse_multiline_patterns(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def read_tabular_file(uploaded_file) -> pd.DataFrame:
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx"):
+        return pd.read_excel(uploaded_file)
+    if name.endswith(".json"):
+        return pd.DataFrame(json.load(uploaded_file))
+    # csv fallback encodings for production robustness
+    raw = uploaded_file.getvalue()
+    for enc in ["utf-8", "utf-8-sig", "gb18030", "big5", "latin1"]:
+        try:
+            return pd.read_csv(io.BytesIO(raw), encoding=enc)
+        except Exception:
+            continue
+    # last resort with replacement to avoid pipeline break
+    text = raw.decode("utf-8", errors="replace")
+    return pd.read_csv(io.StringIO(text))
+
+
 def run_ai_entry_drilldown(candidates_df: pd.DataFrame, judge: Step5LLMJudge) -> list[str]:
     next_urls: list[str] = []
     for row in candidates_df.to_dict("records"):
@@ -227,7 +245,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             if not uploaded_file:
                 st.warning("请上传 Step5 输入文件")
                 st.stop()
-            df = pd.read_csv(uploaded_file) if uploaded_file.name.lower().endswith(".csv") else (pd.read_excel(uploaded_file) if uploaded_file.name.lower().endswith(".xlsx") else pd.DataFrame(json.load(uploaded_file)))
+            df = read_tabular_file(uploaded_file)
             rows = df.to_dict("records")
             if not step5_api_key.strip():
                 st.error("请填写 Step5 API Key")
@@ -253,7 +271,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             if not uploaded_file:
                 st.warning("请上传 Step4 输入文件")
                 st.stop()
-            df = pd.read_csv(uploaded_file) if uploaded_file.name.lower().endswith(".csv") else (pd.read_excel(uploaded_file) if uploaded_file.name.lower().endswith(".xlsx") else pd.DataFrame(json.load(uploaded_file)))
+            df = read_tabular_file(uploaded_file)
             if "url" not in [c.lower() for c in df.columns]:
                 st.error("Step4 输入必须包含 url 列")
                 st.stop()
