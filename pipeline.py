@@ -691,6 +691,14 @@ class Step4Discoverer:
             return False, 0, gates, ["LONG_TEXT_INTRO"], "LONG_TEXT_INTRO"
 
         text = f"{f.title} {f.text}".lower()
+        host = urlparse(f.final_url).netloc.lower()
+        path = urlparse(f.final_url).path.lower()
+        if "wikipedia.org" in host and "/wiki/portal:" in path:
+            return False, 0, gates, ["WIKI_PORTAL_PAGE"], "WIKI_PORTAL_PAGE"
+        if any(k in path for k in ["/guide", "/how-to", "what-constitutes", "doing-business"]):
+            return False, 0, gates, ["GUIDE_STYLE_PAGE"], "GUIDE_STYLE_PAGE"
+        if any(k in text for k in ["what constitutes doing business", "doing business in california", "multistate taxation", "tax guide", "wage and tax"]):
+            return False, 0, gates, ["TAX_GUIDE_PAGE"], "TAX_GUIDE_PAGE"
         non_list_terms = ["about us", "how to", "resource", "overview", "schedule", "calendar", "article", "blog", "guide"]
         if any(t in text for t in non_list_terms) and f.records_count < 8:
             return False, 0, gates, ["NON_LIST_TERM_HIT"], "NON_LIST_TERM_HIT"
@@ -702,7 +710,6 @@ class Step4Discoverer:
             return False, 0, gates, ["LOGIN_PORTAL"], "LOGIN_PORTAL"
 
         featured_like = any(k in text for k in ["featured", "highlights", "latest", "news", "resources"])
-        path = urlparse(f.final_url).path.lower()
         if (
             any(k in path for k in ["bidding-opportunities", "archived-bidding-opportunities", "bid-opportunities"]) and
             f.records_count >= 4 and

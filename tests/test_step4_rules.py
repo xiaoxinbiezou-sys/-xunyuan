@@ -115,3 +115,51 @@ def test_search_shell_page_type():
         records_count=0,
     )
     assert d.classify_non_list_page_type(f) == "search_shell"
+
+
+def test_wikipedia_portal_is_not_list():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://en.wikipedia.org/wiki/Portal:Current_events",
+        title="Portal:Current events",
+        text="latest events news updates",
+        links=[("Event A", "https://example.com/a")] * 8,
+        table_rows=0,
+        table_has_header=False,
+        repeated_blocks=8,
+        titled_link_blocks=8,
+        date_count=8,
+        keyword_signal_count=3,
+        has_pagination=True,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=10,
+    )
+    is_list, _, _, triggered, demotion = d.is_list_page(f)
+    assert is_list is False
+    assert "WIKI_PORTAL_PAGE" in triggered
+    assert demotion == "WIKI_PORTAL_PAGE"
+
+
+def test_tax_guide_style_page_is_not_list():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://sambrotman.com/the-ultimate-guide-to-multistate-taxation-in-california/what-constitutes-doing-business-california",
+        title="What Constitutes Doing Business in California",
+        text="This tax guide explains doing business in california and wage/tax topics.",
+        links=[("Section", "https://example.com/sec")] * 7,
+        table_rows=0,
+        table_has_header=False,
+        repeated_blocks=7,
+        titled_link_blocks=7,
+        date_count=1,
+        keyword_signal_count=0,
+        has_pagination=False,
+        single_object=False,
+        mostly_long_text=True,
+        records_count=8,
+    )
+    is_list, _, _, triggered, demotion = d.is_list_page(f)
+    assert is_list is False
+    assert ("GUIDE_STYLE_PAGE" in triggered) or ("TAX_GUIDE_PAGE" in triggered)
+    assert demotion in {"GUIDE_STYLE_PAGE", "TAX_GUIDE_PAGE"}

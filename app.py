@@ -192,6 +192,25 @@ def run_ai_entry_drilldown(candidates_df: pd.DataFrame, judge: Step5LLMJudge) ->
     return next_urls
 
 
+def apply_step5_list_gate(list_pages_df: pd.DataFrame, judge: Step5LLMJudge) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Use Step5 as final list-page gate: keep only rows judged as list_page with enough confidence."""
+    if list_pages_df.empty:
+        return list_pages_df, pd.DataFrame()
+    decisions = judge.judge_rows(list_pages_df.to_dict("records"))
+    step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
+    if step5_df.empty:
+        return list_pages_df.iloc[0:0], step5_df
+    accepted = step5_df[
+        (step5_df["final_type"].astype(str) == "list_page") &
+        (pd.to_numeric(step5_df["confidence"], errors="coerce").fillna(0) >= 0.6)
+    ]
+    if accepted.empty:
+        return list_pages_df.iloc[0:0], step5_df
+    accepted_urls = set(accepted["url"].astype(str).tolist())
+    filtered = list_pages_df[list_pages_df["final_url"].astype(str).isin(accepted_urls)].copy()
+    return sanitize_for_excel(filtered), step5_df
+
+
 with st.sidebar:
     st.header("Step2 API 配置")
     provider_type = st.selectbox("搜索API类型", ["serper", "custom_json"], index=0)
@@ -349,6 +368,12 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             st.markdown("**step4_candidates.csv**")
             st.dataframe(candidates_df, use_container_width=True, height=220)
             to_download_buttons(candidates_df, "step4_candidates")
+            if step5_api_key.strip() and not list_pages_df.empty:
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                list_pages_df, step5_gate_df = apply_step5_list_gate(list_pages_df, judge)
+                st.markdown("**step5_list_gate.csv**")
+                st.dataframe(step5_gate_df, use_container_width=True, height=220)
+                to_download_buttons(step5_gate_df, "step5_list_gate")
             st.markdown("**list_pages.csv**")
             st.dataframe(list_pages_df, use_container_width=True, height=220)
             to_download_buttons(list_pages_df, "list_pages")
@@ -410,6 +435,13 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                     if child_entry:
                         entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
 
+
+            if step5_api_key.strip() and not list_pages_df.empty:
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                list_pages_df, step5_gate_df = apply_step5_list_gate(list_pages_df, judge)
+                st.markdown("**step5_list_gate.csv**")
+                st.dataframe(step5_gate_df, use_container_width=True, height=220)
+                to_download_buttons(step5_gate_df, "step5_list_gate")
 
             st.success(f"Step4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
             st.markdown("**step4_candidates.csv**")
@@ -500,6 +532,13 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                     list_pages_df = pd.concat([list_pages_df, pd.DataFrame([x.to_dict() for x in child_list])], ignore_index=True)
                 if child_entry:
                     entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
+
+        if step5_api_key.strip() and not list_pages_df.empty:
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            list_pages_df, step5_gate_df = apply_step5_list_gate(list_pages_df, judge)
+            st.markdown("**step5_list_gate.csv**")
+            st.dataframe(step5_gate_df, use_container_width=True, height=220)
+            to_download_buttons(step5_gate_df, "step5_list_gate")
 
         st.success(f"Step 4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
         st.markdown("**step4_candidates.csv**")
