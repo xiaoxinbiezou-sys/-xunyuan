@@ -186,3 +186,53 @@ def test_bid_opportunities_landing_page_not_list():
     is_list, _, _, _, demotion = d.is_list_page(f)
     assert is_list is False
     assert demotion in {"TOO_FEW_RECORDS", "LIST_HARD_GATES_FAILED"}
+
+
+def test_known_open_bid_list_path_hard_passes():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://camisvr.co.la.ca.us/lacobids/BidLookUp/OpenBidList",
+        title="Open Bid List",
+        text="Open Bid List",
+        links=[],
+        table_rows=1,
+        table_has_header=False,
+        repeated_blocks=1,
+        titled_link_blocks=1,
+        date_count=0,
+        keyword_signal_count=1,
+        has_pagination=False,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=1,
+    )
+    is_list, conf, _, triggered, demotion = d.is_list_page(f)
+    assert is_list is True
+    assert conf >= 90
+    assert "KNOWN_OPEN_BID_LIST_PATH" in triggered
+    assert demotion is None
+
+
+def test_pagination_total_records_pattern_hard_passes():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://example.org/procurement/open-bids",
+        title="Open Bids",
+        text="Page 1 of 25 / Showing 1 to 10 of total 248 records",
+        links=[],
+        table_rows=1,
+        table_has_header=False,
+        repeated_blocks=2,
+        titled_link_blocks=2,
+        date_count=0,
+        keyword_signal_count=1,
+        has_pagination=True,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=6,
+    )
+    is_list, conf, _, triggered, demotion = d.is_list_page(f)
+    assert is_list is True
+    assert conf >= 90
+    assert "PAGINATION_TOTAL_RECORDS_PATTERN" in triggered
+    assert demotion is None

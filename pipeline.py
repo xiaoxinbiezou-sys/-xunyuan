@@ -682,6 +682,14 @@ class Step4Discoverer:
         }
         triggered: list[str] = []
         demotion_reason: str | None = None
+        text = f"{f.title} {f.text}".lower()
+        host = urlparse(f.final_url).netloc.lower()
+        path = urlparse(f.final_url).path.lower()
+        if "camisvr.co.la.ca.us" in host and "/bidlookup/openbidlist" in path:
+            return True, 95, gates, ["KNOWN_OPEN_BID_LIST_PATH"], None
+        if ("page 1 of" in text or "page 2 of" in text or "page 3 of" in text) and ("showing" in text and "total" in text and "records" in text):
+            if f.records_count >= 5 or f.has_pagination:
+                return True, 92, gates, ["PAGINATION_TOTAL_RECORDS_PATTERN"], None
 
         if not gates["not_single_object"]:
             return False, 0, gates, ["SINGLE_OBJECT"], "SINGLE_OBJECT"
@@ -690,9 +698,6 @@ class Step4Discoverer:
         if f.mostly_long_text and f.records_count < 3:
             return False, 0, gates, ["LONG_TEXT_INTRO"], "LONG_TEXT_INTRO"
 
-        text = f"{f.title} {f.text}".lower()
-        host = urlparse(f.final_url).netloc.lower()
-        path = urlparse(f.final_url).path.lower()
         if "wikipedia.org" in host and "/wiki/portal:" in path:
             return False, 0, gates, ["WIKI_PORTAL_PAGE"], "WIKI_PORTAL_PAGE"
         if any(k in path for k in ["/guide", "/how-to", "what-constitutes", "doing-business"]):
