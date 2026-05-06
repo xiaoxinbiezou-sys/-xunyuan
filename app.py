@@ -238,6 +238,7 @@ with st.sidebar:
     st.header("Step2 API 配置")
     provider_type = st.selectbox("搜索API类型", ["serper", "custom_json"], index=0)
     per_query_num = st.slider("每个query抓取结果数", min_value=3, max_value=20, value=10)
+    concurrency = st.slider("并发线程数", min_value=4, max_value=128, value=32, step=4)
     enable_negative_terms = st.checkbox("Step1附加负关键词（-news 等）", value=False)
 
     if provider_type == "serper":
@@ -320,7 +321,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             if not step5_api_key.strip():
                 st.error("请填写 Step5 API Key")
                 st.stop()
-            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
             decisions = judge.judge_rows(rows)
             out_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
             st.success(f"Step5 完成：{len(out_df)} 条最终判定")
@@ -383,7 +384,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                     continue
                 step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
 
-            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10, max_workers=concurrency)
             candidates = discoverer.discover_candidates(step4_inputs)
             list_pages, entry_pages = discoverer.discover(step4_inputs)
             candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
@@ -395,7 +396,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             st.dataframe(candidates_df, use_container_width=True, height=220)
             to_download_buttons(candidates_df, "step4_candidates")
             if step5_api_key.strip():
-                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
                 list_pages_df, step5_gate_df = build_final_list_from_step5(
                     list_pages_df=list_pages_df,
                     candidates_df=candidates_df,
@@ -439,7 +440,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             step3_types = df[col_map["step3_type"]].astype(str).tolist() if "step3_type" in col_map else ["other"] * len(urls)
 
             step4_inputs = [Step4Input(id=i + 1, url=u, step3_result=step3_results[i], step3_type=step3_types[i]) for i, u in enumerate(urls) if str(u).strip()]
-            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+            discoverer = Step4Discoverer(timeout=20.0, max_child_links=10, max_workers=concurrency)
             candidates = discoverer.discover_candidates(step4_inputs)
             list_pages, entry_pages = discoverer.discover(step4_inputs)
 
@@ -450,7 +451,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
             if step5_api_key.strip() and not candidates_df.empty:
-                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
                 next_urls = run_ai_entry_drilldown(candidates_df, judge)
                 if next_urls:
                     drill_inputs = [Step4Input(id=100000 + i, url=u, step3_result="review", step3_type="other") for i, u in enumerate(next_urls)]
@@ -465,7 +466,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
 
 
             if step5_api_key.strip():
-                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
                 list_pages_df, step5_gate_df = build_final_list_from_step5(
                     list_pages_df=list_pages_df,
                     candidates_df=candidates_df,
@@ -509,7 +510,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
         else:
             provider = CustomJsonSearchProvider(**custom_config)
 
-        runner = SearchRunner(provider=provider)
+        runner = SearchRunner(provider=provider, max_workers=concurrency)
         step2_results = runner.run_step2(step1_queries, per_query_num=per_query_num)
         step2_df = pd.DataFrame([r.to_dict() for r in step2_results])
         st.success(f"Step 2 完成：{len(step2_df)} 条搜索结果（按URL去重后）")
@@ -546,7 +547,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                 continue  # Step4 先聚焦非平台域，降低噪音
             step4_inputs.append(Step4Input(id=row.id, url=row.url, step3_result=d["result"], step3_type=d["type"]))
 
-        discoverer = Step4Discoverer(timeout=20.0, max_child_links=10)
+        discoverer = Step4Discoverer(timeout=20.0, max_child_links=10, max_workers=concurrency)
         candidates = discoverer.discover_candidates(step4_inputs)
         list_pages, entry_pages = discoverer.discover(step4_inputs)
 
@@ -557,7 +558,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
         entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
         if step5_api_key.strip() and not candidates_df.empty:
-            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
             next_urls = run_ai_entry_drilldown(candidates_df, judge)
             if next_urls:
                 drill_inputs = [Step4Input(id=200000 + i, url=u, step3_result="review", step3_type="other") for i, u in enumerate(next_urls)]
@@ -571,7 +572,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                     entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
 
         if step5_api_key.strip():
-            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+            judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
             list_pages_df, step5_gate_df = build_final_list_from_step5(
                 list_pages_df=list_pages_df,
                 candidates_df=candidates_df,
@@ -601,7 +602,7 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             if not step5_api_key.strip():
                 st.warning("默认自动运行 Step5，但未填写 API Key，已跳过")
             else:
-                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
+                judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url, max_workers=concurrency)
                 step5_rows = candidates_df.to_dict("records") if not candidates_df.empty else list_pages_df.to_dict("records")
                 decisions = judge.judge_rows(step5_rows)
                 step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))

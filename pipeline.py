@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Iterable, Protocol
@@ -274,14 +275,25 @@ class CustomJsonSearchProvider:
 
 
 class SearchRunner:
-    def __init__(self, provider: SearchProvider) -> None:
+    def __init__(self, provider: SearchProvider, max_workers: int = 16) -> None:
         self.provider = provider
+        self.max_workers = max(1, int(max_workers))
 
     def run_step2(self, queries: Iterable[GeneratedQuery], per_query_num: int = 10) -> list[SearchResult]:
+        query_list = list(queries)
         results: list[SearchResult] = []
+        buckets: list[tuple[GeneratedQuery, list[dict[str, Any]]]] = []
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            fut_map = {ex.submit(self.provider.search, q.query_text, per_query_num): q for q in query_list}
+            for fut in as_completed(fut_map):
+                q = fut_map[fut]
+                try:
+                    rows = fut.result()
+                except Exception:
+                    rows = []
+                buckets.append((q, rows))
         next_id = 1
-        for query in queries:
-            rows = self.provider.search(query.query_text, num=per_query_num)
+        for query, rows in buckets:
             for row in rows:
                 link = str(row.get("link") or "")
                 if not link:
@@ -471,86 +483,96 @@ class Step3Classifier:
 class Step4Discoverer:
     """严格列表页识别：优先保证 list_page 准确性；入口页可条件下探至2层。"""
 
-    def __init__(self, timeout: float = 20.0, max_child_links: int = 10, max_depth: int = 2) -> None:
+    def __init__(self, timeout: float = 20.0, max_child_links: int = 10, max_depth: int = 2, max_workers: int = 16) -> None:
         self.timeout = timeout
         self.max_child_links = max_child_links
         self.max_depth = max_depth
-        self.session = requests.Session()
+        self.max_workers = max(1, int(max_workers))
 
     def discover(self, rows: Iterable[Step4Input]) -> tuple[list[ListPageRecord], list[EntryPageRecord]]:
         list_pages: list[ListPageRecord] = []
         entry_pages: list[EntryPageRecord] = []
 
-        for row in rows:
-            source_url = self.normalize_url(row.url)
-            fetched = self.fetch(source_url)
-            if fetched is None:
-                continue
-            final_url, status_code, html = fetched
-            features = self.extract_features(final_url, html)
+        row_list = list(rows)
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            outputs = list(ex.map(self._discover_one, row_list))
+        for lps, eps in outputs:
+            list_pages.extend(lps)
+            entry_pages.extend(eps)
+        return self._dedupe_list_pages(list_pages), entry_pages
 
-            is_list, confidence, gate_results, triggered_rules, demotion_reason = self.is_list_page(features)
-            if is_list:
-                list_pages.append(
-                    ListPageRecord(
-                        source_url=source_url,
-                        final_url=self.normalize_url(final_url),
-                        discovered_from="direct",
-                        parent_entry_url="",
-                        title=features.title,
-                        status_code=status_code,
-                        confidence=confidence,
-                        list_gate_results=gate_results,
-                        triggered_rules=triggered_rules,
-                        demotion_reason=demotion_reason,
-                        drilldown_trace=[self.normalize_url(final_url)],
-                    )
-                )
-                continue
+    def _discover_one(self, row: Step4Input) -> tuple[list[ListPageRecord], list[EntryPageRecord]]:
+        list_pages: list[ListPageRecord] = []
+        entry_pages: list[EntryPageRecord] = []
+        source_url = self.normalize_url(row.url)
+        fetched = self.fetch(source_url)
+        if fetched is None:
+            return list_pages, entry_pages
+        final_url, status_code, html = fetched
+        features = self.extract_features(final_url, html)
 
-            is_entry = self.is_entry_page(features)
-            page_type = self.classify_non_list_page_type(features)
-            if not is_entry:
-                entry_pages.append(
-                    EntryPageRecord(
-                        url=self.normalize_url(final_url),
-                        title=features.title,
-                        child_links_checked=0,
-                        list_pages_found_count=0,
-                        page_type=page_type,
-                        triggered_rules=triggered_rules,
-                        demotion_reason=demotion_reason,
-                        drilldown_trace=[self.normalize_url(final_url)],
-                    )
-                )
-                continue
-
-            candidates = self.select_candidate_links(final_url, features.links)
-            found_count = 0
-            for link in candidates:
-                found_count += self._drill_for_list(
+        is_list, confidence, gate_results, triggered_rules, demotion_reason = self.is_list_page(features)
+        if is_list:
+            list_pages.append(
+                ListPageRecord(
                     source_url=source_url,
-                    parent_url=self.normalize_url(final_url),
-                    link=link,
-                    list_pages=list_pages,
-                    depth=1,
-                    trace=[self.normalize_url(final_url)],
-                )
-
-            entry_pages.append(
-                EntryPageRecord(
-                    url=self.normalize_url(final_url),
+                    final_url=self.normalize_url(final_url),
+                    discovered_from="direct",
+                    parent_entry_url="",
                     title=features.title,
-                    child_links_checked=len(candidates),
-                    list_pages_found_count=found_count,
-                    page_type=self.classify_non_list_page_type(features),
-                    triggered_rules=(triggered_rules or []) + ["ENTRY_PAGE_DISCOVERY"],
+                    status_code=status_code,
+                    confidence=confidence,
+                    list_gate_results=gate_results,
+                    triggered_rules=triggered_rules,
                     demotion_reason=demotion_reason,
                     drilldown_trace=[self.normalize_url(final_url)],
                 )
             )
+            return list_pages, entry_pages
 
-        return self._dedupe_list_pages(list_pages), entry_pages
+        is_entry = self.is_entry_page(features)
+        page_type = self.classify_non_list_page_type(features)
+        if not is_entry:
+            entry_pages.append(
+                EntryPageRecord(
+                    url=self.normalize_url(final_url),
+                    title=features.title,
+                    child_links_checked=0,
+                    list_pages_found_count=0,
+                    page_type=page_type,
+                    triggered_rules=triggered_rules,
+                    demotion_reason=demotion_reason,
+                    drilldown_trace=[self.normalize_url(final_url)],
+                )
+            )
+            return list_pages, entry_pages
+
+        candidates = self.select_candidate_links(final_url, features.links)
+        found_count = 0
+        for link in candidates:
+            found_count += self._drill_for_list(
+                source_url=source_url,
+                parent_url=self.normalize_url(final_url),
+                link=link,
+                list_pages=list_pages,
+                depth=1,
+                trace=[self.normalize_url(final_url)],
+            )
+
+        entry_pages.append(
+            EntryPageRecord(
+                url=self.normalize_url(final_url),
+                title=features.title,
+                child_links_checked=len(candidates),
+                list_pages_found_count=found_count,
+                page_type=self.classify_non_list_page_type(features),
+                triggered_rules=(triggered_rules or []) + ["ENTRY_PAGE_DISCOVERY"],
+                demotion_reason=demotion_reason,
+                drilldown_trace=[self.normalize_url(final_url)],
+            )
+        )
+
+        return list_pages, entry_pages
 
 
     def _drill_for_list(self, source_url: str, parent_url: str, link: str, list_pages: list[ListPageRecord], depth: int, trace: list[str]) -> int:
@@ -585,35 +607,40 @@ class Step4Discoverer:
         return found
     def discover_candidates(self, rows: Iterable[Step4Input]) -> list[Step4Candidate]:
         candidates: list[Step4Candidate] = []
-        for row in rows:
-            source_url = self.normalize_url(row.url)
-            fetched = self.fetch(source_url)
-            if fetched is None:
-                continue
-            final_url, _, html = fetched
-            features = self.extract_features(final_url, html)
-            is_list, conf, _, triggered, demotion = self.is_list_page(features)
-            is_entry = self.is_entry_page(features)
-            ctype = "list_like" if is_list else (self.classify_non_list_page_type(features) if is_entry else "general_info")
-            candidates.append(
-                Step4Candidate(
-                    source_url=source_url,
-                    final_url=self.normalize_url(final_url),
-                    title=features.title,
-                    text=features.text[:4000],
-                    candidate_type=ctype,
-                    list_likelihood=conf / 100.0,
-                    entry_likelihood=0.9 if is_entry else 0.2,
-                    triggered_rules=triggered,
-                    demotion_reason=demotion,
-                    drilldown_trace=[self.normalize_url(final_url)],
-                )
-            )
+        row_list = list(rows)
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            outputs = list(ex.map(self._discover_candidate_one, row_list))
+        for c in outputs:
+            if c is not None:
+                candidates.append(c)
         return candidates
+
+    def _discover_candidate_one(self, row: Step4Input) -> Step4Candidate | None:
+        source_url = self.normalize_url(row.url)
+        fetched = self.fetch(source_url)
+        if fetched is None:
+            return None
+        final_url, _, html = fetched
+        features = self.extract_features(final_url, html)
+        is_list, conf, _, triggered, demotion = self.is_list_page(features)
+        is_entry = self.is_entry_page(features)
+        ctype = "list_like" if is_list else (self.classify_non_list_page_type(features) if is_entry else "general_info")
+        return Step4Candidate(
+            source_url=source_url,
+            final_url=self.normalize_url(final_url),
+            title=features.title,
+            text=features.text[:4000],
+            candidate_type=ctype,
+            list_likelihood=conf / 100.0,
+            entry_likelihood=0.9 if is_entry else 0.2,
+            triggered_rules=triggered,
+            demotion_reason=demotion,
+            drilldown_trace=[self.normalize_url(final_url)],
+        )
 
     def fetch(self, url: str) -> tuple[str, int, str] | None:
         try:
-            resp = self.session.get(url, timeout=self.timeout, headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(url, timeout=self.timeout, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
             return resp.url, resp.status_code, resp.text[:400000]
         except Exception:
@@ -888,31 +915,35 @@ class Step5Decision:
 class Step5LLMJudge:
     """利用大模型对候选页面做最终类型判定。"""
 
-    def __init__(self, provider: str, model: str, api_key: str, base_url: str = "", timeout: float = 30.0) -> None:
+    def __init__(self, provider: str, model: str, api_key: str, base_url: str = "", timeout: float = 30.0, max_workers: int = 16) -> None:
         self.provider = provider.strip().lower()
         self.model = model.strip()
         self.api_key = api_key.strip()
         self.base_url = base_url.strip()
         self.timeout = timeout
+        self.max_workers = max(1, int(max_workers))
 
     def judge_rows(self, rows: list[dict[str, Any]]) -> list[Step5Decision]:
         out: list[Step5Decision] = []
-        for row in rows:
-            try:
-                out.append(self.judge_one(row))
-            except Exception as exc:
-                url = str(row.get("url") or row.get("final_url") or "")
-                out.append(
-                    Step5Decision(
-                        url=url,
-                        final_type="review_needed",
-                        confidence=0.0,
-                        reason=f"step5_row_error:{exc}",
-                        provider=self.provider,
-                        model=self.model,
-                        input_quality="error",
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            fut_map = {ex.submit(self.judge_one, row): row for row in rows}
+            for fut in as_completed(fut_map):
+                row = fut_map[fut]
+                try:
+                    out.append(fut.result())
+                except Exception as exc:
+                    url = str(row.get("url") or row.get("final_url") or "")
+                    out.append(
+                        Step5Decision(
+                            url=url,
+                            final_type="review_needed",
+                            confidence=0.0,
+                            reason=f"step5_row_error:{exc}",
+                            provider=self.provider,
+                            model=self.model,
+                            input_quality="error",
+                        )
                     )
-                )
         return out
 
     def judge_one(self, row: dict[str, Any]) -> Step5Decision:
