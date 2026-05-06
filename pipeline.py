@@ -685,8 +685,9 @@ class Step4Discoverer:
         text = f"{f.title} {f.text}".lower()
         host = urlparse(f.final_url).netloc.lower()
         path = urlparse(f.final_url).path.lower()
-        if any(k in path for k in ["/list", "list/", "openbidlist", "bidlist", "solicitationlist"]):
-            return True, 90, gates, ["PATH_CONTAINS_LIST"], None
+        list_path_hint = any(k in path for k in ["/list", "list/", "openbidlist", "bidlist", "solicitationlist"])
+        if list_path_hint:
+            triggered.append("PATH_CONTAINS_LIST_HINT")
         if ("page 1 of" in text or "page 2 of" in text or "page 3 of" in text) and ("showing" in text and "total" in text and "records" in text):
             if f.records_count >= 5 or f.has_pagination:
                 return True, 92, gates, ["PAGINATION_TOTAL_RECORDS_PATTERN"], None
@@ -730,6 +731,8 @@ class Step4Discoverer:
             return False, 40, gates, ["LIST_HARD_GATES_FAILED"], "LIST_HARD_GATES_FAILED"
 
         score = 70
+        if list_path_hint:
+            score += 8
         if f.table_rows >= 8:
             score += 10
             triggered.append("TABLE_DENSE")

@@ -188,7 +188,7 @@ def test_bid_opportunities_landing_page_not_list():
     assert demotion in {"TOO_FEW_RECORDS", "LIST_HARD_GATES_FAILED"}
 
 
-def test_path_contains_list_hard_passes():
+def test_path_contains_list_is_only_hint_not_hard_pass():
     d = Step4Discoverer()
     f = PageFeatures(
         final_url="https://example.com/procurement/BidLookUp/OpenBidList",
@@ -206,11 +206,9 @@ def test_path_contains_list_hard_passes():
         mostly_long_text=False,
         records_count=1,
     )
-    is_list, conf, _, triggered, demotion = d.is_list_page(f)
-    assert is_list is True
-    assert conf >= 90
-    assert "PATH_CONTAINS_LIST" in triggered
-    assert demotion is None
+    is_list, _, _, _, demotion = d.is_list_page(f)
+    assert is_list is False
+    assert demotion in {"TOO_FEW_RECORDS", "LIST_HARD_GATES_FAILED"}
 
 
 def test_pagination_total_records_pattern_hard_passes():
