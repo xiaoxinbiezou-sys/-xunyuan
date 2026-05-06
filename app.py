@@ -119,7 +119,13 @@ def sanitize_for_excel(df: pd.DataFrame) -> pd.DataFrame:
             return v
         return "".join(ch for ch in v if (ch in {"\t", "\n", "\r"} or ord(ch) >= 32))
 
+    # pandas>=2.1 recommends DataFrame.map for element-wise transforms;
+    # keep applymap fallback for older versions.
+    if hasattr(df, "map"):
+        return df.map(_clean)
     return df.applymap(_clean)
+
+
 def to_download_buttons(df: pd.DataFrame, key_prefix: str) -> None:
     safe_df = sanitize_for_excel(df)
     json_data = safe_df.to_json(orient="records", indent=2, force_ascii=False)
