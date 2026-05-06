@@ -220,6 +220,48 @@ def apply_step5_list_gate(
     return sanitize_for_excel(filtered), step5_df
 
 
+def build_final_list_from_step5(
+    list_pages_df: pd.DataFrame,
+    candidates_df: pd.DataFrame,
+    judge: Step5LLMJudge,
+    min_confidence: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    pool_frames: list[pd.DataFrame] = []
+    if not candidates_df.empty:
+        c = candidates_df.copy()
+        if "candidate_type" in c.columns:
+            c = c[c["candidate_type"].astype(str) != "entry_page"]
+        pool_frames.append(c)
+    if not list_pages_df.empty:
+        l = list_pages_df.copy()
+        if "confidence" in l.columns:
+            l["confidence_num"] = pd.to_numeric(l["confidence"], errors="coerce").fillna(0)
+            l = l[l["confidence_num"] >= 90]
+            l = l.drop(columns=["confidence_num"])
+        pool_frames.append(l)
+    if not pool_frames:
+        return pd.DataFrame(), pd.DataFrame()
+    pool = pd.concat(pool_frames, ignore_index=True)
+    if "final_url" in pool.columns and "url" not in pool.columns:
+        pool["url"] = pool["final_url"]
+    if "text" not in pool.columns:
+        pool["text"] = ""
+    pool = pool.drop_duplicates(subset=["url"], keep="first")
+    decisions = judge.judge_rows(pool.to_dict("records"))
+    step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
+    if step5_df.empty:
+        return pd.DataFrame(), step5_df
+    accepted = step5_df[
+        (step5_df["final_type"].astype(str) == "list_page")
+        & (pd.to_numeric(step5_df["confidence"], errors="coerce").fillna(0) >= min_confidence)
+    ].copy()
+    if accepted.empty:
+        return pd.DataFrame(), step5_df
+    accepted = accepted.rename(columns={"url": "final_url"})
+    accepted["list_decision_source"] = "step5"
+    return sanitize_for_excel(accepted), step5_df
+
+
 with st.sidebar:
     st.header("Step2 API 配置")
     provider_type = st.selectbox("搜索API类型", ["serper", "custom_json"], index=0)
@@ -380,9 +422,14 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             st.markdown("**step4_candidates.csv**")
             st.dataframe(candidates_df, use_container_width=True, height=220)
             to_download_buttons(candidates_df, "step4_candidates")
-            if step5_api_key.strip() and not list_pages_df.empty:
+            if step5_api_key.strip():
                 judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
-                list_pages_df, step5_gate_df = apply_step5_list_gate(list_pages_df, judge, step5_list_gate_threshold)
+                list_pages_df, step5_gate_df = build_final_list_from_step5(
+                    list_pages_df=list_pages_df,
+                    candidates_df=candidates_df,
+                    judge=judge,
+                    min_confidence=step5_list_gate_threshold,
+                )
                 st.markdown("**step5_list_gate.csv**")
                 st.dataframe(step5_gate_df, use_container_width=True, height=220)
                 to_download_buttons(step5_gate_df, "step5_list_gate")
@@ -452,9 +499,14 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                         entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
 
 
-            if step5_api_key.strip() and not list_pages_df.empty:
+            if step5_api_key.strip():
                 judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
-                list_pages_df, step5_gate_df = apply_step5_list_gate(list_pages_df, judge, step5_list_gate_threshold)
+                list_pages_df, step5_gate_df = build_final_list_from_step5(
+                    list_pages_df=list_pages_df,
+                    candidates_df=candidates_df,
+                    judge=judge,
+                    min_confidence=step5_list_gate_threshold,
+                )
                 st.markdown("**step5_list_gate.csv**")
                 st.dataframe(step5_gate_df, use_container_width=True, height=220)
                 to_download_buttons(step5_gate_df, "step5_list_gate")
@@ -553,9 +605,14 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                 if child_entry:
                     entry_pages_df = pd.concat([entry_pages_df, pd.DataFrame([x.to_dict() for x in child_entry])], ignore_index=True)
 
-        if step5_api_key.strip() and not list_pages_df.empty:
+        if step5_api_key.strip():
             judge = Step5LLMJudge(provider=step5_provider, model=step5_model, api_key=step5_api_key, base_url=step5_base_url)
-            list_pages_df, step5_gate_df = apply_step5_list_gate(list_pages_df, judge, step5_list_gate_threshold)
+            list_pages_df, step5_gate_df = build_final_list_from_step5(
+                list_pages_df=list_pages_df,
+                candidates_df=candidates_df,
+                judge=judge,
+                min_confidence=step5_list_gate_threshold,
+            )
             st.markdown("**step5_list_gate.csv**")
             st.dataframe(step5_gate_df, use_container_width=True, height=220)
             to_download_buttons(step5_gate_df, "step5_list_gate")
