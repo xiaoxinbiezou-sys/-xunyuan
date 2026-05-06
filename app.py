@@ -200,6 +200,9 @@ def apply_step5_list_gate(
     """Use Step5 as final list-page gate: keep only rows judged as list_page with enough confidence."""
     if list_pages_df.empty:
         return list_pages_df, pd.DataFrame()
+    list_pages_df = list_pages_df.copy()
+    if "list_decision_source" not in list_pages_df.columns:
+        list_pages_df["list_decision_source"] = "step4"
     decisions = judge.judge_rows(list_pages_df.to_dict("records"))
     step5_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in decisions]))
     if step5_df.empty:
@@ -213,6 +216,7 @@ def apply_step5_list_gate(
     accepted_urls = set(accepted["url"].astype(str).tolist())
     filtered = list_pages_df[list_pages_df["final_url"].astype(str).isin(accepted_urls)].copy()
     filtered = filtered.drop_duplicates(subset=["final_url"], keep="first").reset_index(drop=True)
+    filtered["list_decision_source"] = "step5"
     return sanitize_for_excel(filtered), step5_df
 
 
@@ -370,6 +374,8 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             list_pages, entry_pages = discoverer.discover(step4_inputs)
             candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
             list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+            if not list_pages_df.empty:
+                list_pages_df["list_decision_source"] = "step4"
             entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
             st.markdown("**step4_candidates.csv**")
             st.dataframe(candidates_df, use_container_width=True, height=220)
@@ -380,6 +386,8 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                 st.markdown("**step5_list_gate.csv**")
                 st.dataframe(step5_gate_df, use_container_width=True, height=220)
                 to_download_buttons(step5_gate_df, "step5_list_gate")
+            if not list_pages_df.empty and "list_decision_source" in list_pages_df.columns:
+                list_pages_df["list_decision_source"] = list_pages_df["list_decision_source"].fillna("step4")
             st.markdown("**list_pages.csv**")
             st.dataframe(list_pages_df, use_container_width=True, height=220)
             to_download_buttons(list_pages_df, "list_pages")
@@ -425,6 +433,8 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
 
             candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
             list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+            if not list_pages_df.empty:
+                list_pages_df["list_decision_source"] = "step4"
             entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
             if step5_api_key.strip() and not candidates_df.empty:
@@ -449,6 +459,8 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
                 st.dataframe(step5_gate_df, use_container_width=True, height=220)
                 to_download_buttons(step5_gate_df, "step5_list_gate")
 
+            if not list_pages_df.empty and "list_decision_source" in list_pages_df.columns:
+                list_pages_df["list_decision_source"] = list_pages_df["list_decision_source"].fillna("step4")
             st.success(f"Step4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
             st.markdown("**step4_candidates.csv**")
             st.dataframe(candidates_df, use_container_width=True, height=220)
@@ -523,6 +535,8 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
 
         candidates_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in candidates]))
         list_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in list_pages]))
+        if not list_pages_df.empty:
+            list_pages_df["list_decision_source"] = "step4"
         entry_pages_df = sanitize_for_excel(pd.DataFrame([x.to_dict() for x in entry_pages]))
 
         if step5_api_key.strip() and not candidates_df.empty:
@@ -546,6 +560,8 @@ if st.button("运行" if run_mode in {"step4_only", "step5_only"} else "运行 S
             st.dataframe(step5_gate_df, use_container_width=True, height=220)
             to_download_buttons(step5_gate_df, "step5_list_gate")
 
+        if not list_pages_df.empty and "list_decision_source" in list_pages_df.columns:
+            list_pages_df["list_decision_source"] = list_pages_df["list_decision_source"].fillna("step4")
         st.success(f"Step 4 完成：候选页 {len(candidates_df)}，列表页 {len(list_pages_df)}，入口页 {len(entry_pages_df)}")
         st.markdown("**step4_candidates.csv**")
         st.dataframe(candidates_df, use_container_width=True, height=220)
