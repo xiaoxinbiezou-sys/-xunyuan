@@ -163,3 +163,26 @@ def test_tax_guide_style_page_is_not_list():
     assert is_list is False
     assert ("GUIDE_STYLE_PAGE" in triggered) or ("TAX_GUIDE_PAGE" in triggered)
     assert demotion in {"GUIDE_STYLE_PAGE", "TAX_GUIDE_PAGE"}
+
+
+def test_bid_opportunities_landing_page_not_list():
+    d = Step4Discoverer()
+    f = PageFeatures(
+        final_url="https://foundationccc.org/our-work/system-support/providing-affordable-products-and-technology/collegebuys/rfp-and-bid-opportunities",
+        title="RFP and Bid Opportunities",
+        text="Bid opportunities vendor portal view all solicitations.",
+        links=[("View opportunities", "https://example.com/opps"), ("Vendor portal", "https://example.com/portal")],
+        table_rows=0,
+        table_has_header=False,
+        repeated_blocks=2,
+        titled_link_blocks=2,
+        date_count=0,
+        keyword_signal_count=2,
+        has_pagination=False,
+        single_object=False,
+        mostly_long_text=False,
+        records_count=2,
+    )
+    is_list, _, _, _, demotion = d.is_list_page(f)
+    assert is_list is False
+    assert demotion in {"TOO_FEW_RECORDS", "LIST_HARD_GATES_FAILED"}
