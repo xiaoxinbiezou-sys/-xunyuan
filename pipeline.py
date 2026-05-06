@@ -933,6 +933,12 @@ class Step5LLMJudge:
         final_type = str(result.get("final_type") or "general_info")
         confidence = float(result.get("confidence") or 0.5)
         reason = str(result.get("reason") or "")
+        final_type, confidence, reason = self._apply_entry_override(
+            row=row,
+            final_type=final_type,
+            confidence=confidence,
+            reason=reason,
+        )
         return Step5Decision(url=url, final_type=final_type, confidence=confidence, reason=reason, provider=self.provider, model=self.model, input_quality=input_quality)
 
 
@@ -952,6 +958,27 @@ class Step5LLMJudge:
         next_urls = result.get("next_urls") if isinstance(result.get("next_urls"), list) else []
         reason = str(result.get("reason") or "")
         return {"url": url, "is_entry_page": is_entry, "next_urls": [str(x) for x in next_urls[:5]], "reason": reason}
+
+    def _apply_entry_override(
+        self,
+        row: dict[str, Any],
+        final_type: str,
+        confidence: float,
+        reason: str,
+    ) -> tuple[str, float, str]:
+        if final_type != "review_needed":
+            return final_type, confidence, reason
+        title = str(row.get("title") or "").lower()
+        text = str(row.get("text") or row.get("snippet") or "").lower()
+        url = str(row.get("url") or row.get("final_url") or "").lower()
+        combo = f"{title} {text} {url}"
+        entry_positive = ["view all", "bid opportunities", "solicitations", "open bids", "vendor portal", "public bid site", "supplier portal"]
+        list_evidence = ["page 1 of", "showing", "total", "records", "deadline", "due date", "solicitation number", "status"]
+        has_entry = any(k in combo for k in entry_positive)
+        has_list = sum(1 for k in list_evidence if k in combo) >= 2
+        if has_entry and not has_list:
+            return "entry_page", max(confidence, 0.75), ((reason + " | ENTRY_OVERRIDE").strip(" |"))
+        return final_type, confidence, reason
 
     def _call_model(self, prompt: str) -> dict[str, Any]:
         endpoint, headers, payload = self._build_request(prompt)
