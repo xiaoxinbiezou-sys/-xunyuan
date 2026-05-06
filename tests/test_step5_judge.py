@@ -29,3 +29,17 @@ def test_review_needed_not_overridden_when_list_signals_exist():
         }
     )
     assert d.final_type == "review_needed"
+
+
+def test_extract_json_from_markdown_codeblock():
+    j = Step5LLMJudge(provider="deepseek", model="x", api_key="k")
+    text = """```json
+{
+  "final_type": "general_info",
+  "confidence": 0.95,
+  "reason": "blog article"
+}
+```"""
+    d = j._extract_json_from_text(text)
+    assert isinstance(d, dict)
+    assert d["final_type"] == "general_info"

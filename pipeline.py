@@ -993,6 +993,9 @@ class Step5LLMJudge:
         try:
             return json.loads(content)
         except Exception:
+            extracted = self._extract_json_from_text(content)
+            if extracted is not None:
+                return extracted
             return {
                 "final_type": "review_needed",
                 "confidence": 0.2,
@@ -1000,6 +1003,28 @@ class Step5LLMJudge:
                 "is_entry_page": False,
                 "next_urls": [],
             }
+
+    @staticmethod
+    def _extract_json_from_text(text: str) -> dict[str, Any] | None:
+        s = (text or "").strip()
+        if not s:
+            return None
+        if s.startswith("```"):
+            lines = s.splitlines()
+            if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
+                s = "\n".join(lines[1:-1]).strip()
+                if s.lower().startswith("json"):
+                    s = s[4:].strip()
+        start = s.find("{")
+        end = s.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        candidate = s[start : end + 1]
+        try:
+            data = json.loads(candidate)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
 
     def _build_request(self, prompt: str) -> tuple[str, dict[str, str], dict[str, Any]]:
         if self.provider in {"deepseek", "qwen", "doubao", "openai_compatible"}:
